@@ -1,0 +1,17 @@
+kind = "web"
+previewPath = "/"
+title = "No Betting Zone"
+version = "1.0.0"
+id = "artifacts/no-betting-zone"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 3003
+
+[services.development]
+run = "node /home/runner/workspace/index.js"
+
+[services.env]
+PORT = "3003"

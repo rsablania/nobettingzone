@@ -1,5 +1,5 @@
 kind = "web"
-previewPath = "/"
+previewPath = "/repl/"
 title = "Node.js REPL"
 version = "1.0.0"
 id = "artifacts/node-repl"
@@ -11,7 +11,7 @@ version = "1.0.0"
 
 [[services]]
 name = "web"
-paths = [ "/" ]
+paths = [ "/repl/" ]
 localPort = 22691
 
 [services.development]
@@ -28,4 +28,4 @@ to = "/index.html"
 
 [services.env]
 PORT = "22691"
-BASE_PATH = "/"
+BASE_PATH = "/repl/"
