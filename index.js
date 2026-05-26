@@ -7,9 +7,110 @@ const db = new Database();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// IMPORTANT: set API_FOOTBALL_KEY in Replit "Secrets"
 const API_KEY = process.env.API_FOOTBALL_KEY;
 const API_BASE = 'https://v3.football.api-sports.io';
+
+const ODDS_API_KEY = process.env.THE_ODDS_API_KEY;
+const ODDS_API_BASE = 'https://api.the-odds-api.com/v4';
+
+// Map API-Football league names → The Odds API sport keys
+// Checked against the 21 soccer sports available on the free plan
+const LEAGUE_TO_SPORT_KEY = {
+  'premier league':                      'soccer_epl',
+  'ligue 1':                             'soccer_france_ligue_one',
+  'bundesliga 2':                        'soccer_germany_bundesliga2',
+  'serie b':                             'soccer_italy_serie_b',
+  'allsvenskan':                         'soccer_sweden_allsvenskan',
+  'superettan':                          'soccer_sweden_superettan',
+  'eliteserien':                         'soccer_norway_eliteserien',
+  'veikkausliiga':                       'soccer_finland_veikkausliiga',
+  'first division a':                    'soccer_belgium_first_div',
+  'belgian pro league':                  'soccer_belgium_first_div',
+  'league of ireland':                   'soccer_league_of_ireland',
+  'super league':                        'soccer_china_superleague',
+  'j1 league':                           'soccer_japan_j_league',
+  'j league':                            'soccer_japan_j_league',
+  'brasileirao serie a':                 'soccer_brazil_campeonato',
+  'brasileiro serie a':                  'soccer_brazil_campeonato',
+  'brasileirao serie b':                 'soccer_brazil_serie_b',
+  'copa libertadores':                   'soccer_conmebol_copa_libertadores',
+  'conmebol libertadores':               'soccer_conmebol_copa_libertadores',
+  'copa sudamericana':                   'soccer_conmebol_copa_sudamericana',
+  'conmebol sudamericana':               'soccer_conmebol_copa_sudamericana',
+  'primera division':                    'soccer_chile_campeonato',
+  'primera división':                    'soccer_chile_campeonato',
+  'champions league':                    'soccer_uefa_champs_league',
+  'uefa champions league':               'soccer_uefa_champs_league',
+  'conference league':                   'soccer_uefa_europa_conference_league',
+  'uefa europa conference league':       'soccer_uefa_europa_conference_league',
+};
+
+// Cache odds per sport key for 30 minutes to conserve the 500 req/month quota
+const oddsSportCache = {};
+
+function normalizeName(name) {
+  return name
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/\b(fc|cf|sc|ac|if|bk|fk|sk|nk|gd|cd|ca|sd|as|ss|us|afc|utd|united|city)\b/g, '')
+    .replace(/[^a-z0-9 ]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function teamsMatch(a, b) {
+  const na = normalizeName(a);
+  const nb = normalizeName(b);
+  if (na === nb) return true;
+  if (na.length > 3 && nb.length > 3) return na.includes(nb) || nb.includes(na);
+  return false;
+}
+
+async function getOddsFromOddsAPI(homeTeam, awayTeam, leagueName) {
+  if (!ODDS_API_KEY) return null;
+  const leagueKey = leagueName.toLowerCase().trim();
+  let sportKey = null;
+  for (const [pattern, key] of Object.entries(LEAGUE_TO_SPORT_KEY)) {
+    if (leagueKey.includes(pattern) || pattern.includes(leagueKey)) {
+      sportKey = key;
+      break;
+    }
+  }
+  if (!sportKey) return null;
+
+  const now = Date.now();
+  if (!oddsSportCache[sportKey] || now - oddsSportCache[sportKey].time > 30 * 60 * 1000) {
+    try {
+      const resp = await axios.get(`${ODDS_API_BASE}/sports/${sportKey}/odds`, {
+        params: { apiKey: ODDS_API_KEY, regions: 'eu', markets: 'h2h', oddsFormat: 'decimal' }
+      });
+      oddsSportCache[sportKey] = { time: now, events: resp.data };
+    } catch (e) {
+      console.error('Odds API fetch error:', e.message);
+      return null;
+    }
+  }
+
+  const events = oddsSportCache[sportKey].events || [];
+  const event = events.find(e =>
+    teamsMatch(e.home_team, homeTeam) && teamsMatch(e.away_team, awayTeam)
+  );
+  if (!event || !event.bookmakers.length) return null;
+
+  const market = event.bookmakers[0].markets.find(m => m.key === 'h2h');
+  if (!market) return null;
+
+  const outcomes = market.outcomes.map(o => {
+    let value;
+    if (o.name === 'Draw') value = 'Draw';
+    else if (teamsMatch(o.name, homeTeam)) value = 'Home';
+    else value = 'Away';
+    return { value, odd: Number(o.price).toFixed(2) };
+  });
+  const order = { Home: 0, Draw: 1, Away: 2 };
+  outcomes.sort((a, b) => order[a.value] - order[b.value]);
+  return outcomes.length === 3 ? outcomes : null;
+}
 
 // Timezone for display (India)
 const TIMEZONE = 'Asia/Kolkata';
@@ -87,35 +188,22 @@ function getStage(fixture) {
   return 'KNOCKOUT';
 }
 
-// Default odds used when the API doesn't provide them (free plan restriction)
+// Default odds — used when a league isn't covered by The Odds API free plan
 const DEFAULT_ODDS = [
   { value: 'Home', odd: '1.90' },
   { value: 'Draw', odd: '3.20' },
   { value: 'Away', odd: '2.10' },
 ];
 
-// Get 1X2 odds for a fixture — falls back to defaults on free plan
-async function getOddsForFixture(fixtureId) {
+// Try The Odds API first; fall back to defaults for uncovered leagues
+async function getOddsForFixture(homeTeam, awayTeam, leagueName) {
   try {
-    const oddsResp = await apiGet('/odds', { fixture: String(fixtureId) });
-    if (!oddsResp || !oddsResp.length) return DEFAULT_ODDS;
-
-    const first = oddsResp[0];
-    const bookmakers = first.bookmakers || [];
-    if (!bookmakers.length) return DEFAULT_ODDS;
-
-    const bets = bookmakers[0].bets || [];
-    const matchResult = bets.find(
-      b => (b.name && b.name.toLowerCase().includes('winner')) || b.id === 1
-    ) || bets[0];
-
-    if (!matchResult) return DEFAULT_ODDS;
-    const values = matchResult.values || [];
-    return values.length ? values : DEFAULT_ODDS;
+    const real = await getOddsFromOddsAPI(homeTeam, awayTeam, leagueName);
+    if (real) return real;
   } catch (e) {
-    console.error('Odds error', e.message);
-    return DEFAULT_ODDS;
+    console.error('Odds error:', e.message);
   }
+  return DEFAULT_ODDS;
 }
 
 /* ---------------- REPLIT DB HELPERS ---------------- */
@@ -409,13 +497,13 @@ app.get('/match', async (req, res) => {
     const fixture = await getFixtureById(fixtureId);
     if (!fixture) return res.status(404).send('Match not found');
 
-    const odds = await getOddsForFixture(fixtureId);
     const stage = getStage(fixture);
     const stake = stage === 'GROUP' ? 50 : 100;
     const home = fixture.teams.home.name;
     const away = fixture.teams.away.name;
     const date = moment(fixture.fixture.date).tz(TIMEZONE).format('DD MMM, HH:mm');
     const leagueName = fixture.league?.name || 'Unknown Tournament';
+    const odds = await getOddsForFixture(home, away, leagueName);
 
     let html = htmlHeader(`${home} vs ${away} - No Betting Zone`);
     html += `
@@ -495,8 +583,12 @@ app.post('/bet', async (req, res) => {
     `);
   }
 
-  // Get latest odds
-  const odds = await getOddsForFixture(fixtureId);
+  // Get latest odds to lock in the price at time of bet
+  const odds = await getOddsForFixture(
+    fixture.teams.home.name,
+    fixture.teams.away.name,
+    fixture.league?.name || ''
+  );
   let lockedOdds = 2.0;
   if (odds && odds.length) {
     const match = odds.find(o => o.value === selection);
