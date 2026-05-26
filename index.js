@@ -139,6 +139,86 @@ async function getMessages() {
   return (await db.get('messages')) || [];
 }
 
+async function updateBets(updatedBets) {
+  await db.set('bets', updatedBets);
+}
+
+/* ---------------- SETTLEMENT ENGINE ---------------- */
+
+// Determine match result string from API fixture data
+function getMatchResult(fixture) {
+  const home = fixture.teams.home;
+  const away = fixture.teams.away;
+  if (home.winner === true) return 'Home';
+  if (away.winner === true) return 'Away';
+  return 'Draw';
+}
+
+// Settle all pending bets for recently finished fixtures
+// Returns a summary { settled, errors }
+async function settlePendingBets() {
+  const summary = { settled: 0, errors: [] };
+
+  let finishedFixtures;
+  try {
+    finishedFixtures = await apiGet('/fixtures', { status: 'FT', last: '30' });
+  } catch (e) {
+    summary.errors.push(`API error fetching finished fixtures: ${e.message}`);
+    return summary;
+  }
+
+  if (!finishedFixtures || !finishedFixtures.length) return summary;
+
+  const allBets = await getBets();
+  const pendingBets = allBets.filter(b => b.status === 'PENDING');
+  if (!pendingBets.length) return summary;
+
+  // Build a map of fixtureId → result for fast lookup
+  const resultMap = {};
+  for (const f of finishedFixtures) {
+    resultMap[String(f.fixture.id)] = getMatchResult(f);
+  }
+
+  let changed = false;
+  for (const bet of allBets) {
+    if (bet.status !== 'PENDING') continue;
+    const result = resultMap[String(bet.fixtureId)];
+    if (!result) continue; // fixture not finished yet
+
+    const won = bet.selection === result;
+    bet.status = won ? 'WON' : 'LOST';
+    // Net points: profit on win (odds-based), full stake lost on miss
+    bet.netPoints = won
+      ? Math.round(bet.stake * (parseFloat(bet.lockedOdds) - 1) * 10) / 10
+      : -bet.stake;
+    bet.result = result;
+    changed = true;
+    summary.settled++;
+
+    // Update user total
+    try {
+      const user = await getUser(bet.user);
+      user.totalNetPoints = Math.round((user.totalNetPoints + bet.netPoints) * 10) / 10;
+      await saveUser(user);
+    } catch (e) {
+      summary.errors.push(`User update error for ${bet.user}: ${e.message}`);
+    }
+  }
+
+  if (changed) await updateBets(allBets);
+  return summary;
+}
+
+// Auto-settle every 15 minutes
+setInterval(async () => {
+  try {
+    const s = await settlePendingBets();
+    if (s.settled > 0) console.log(`Auto-settlement: settled ${s.settled} bets`);
+  } catch (e) {
+    console.error('Auto-settlement error:', e.message);
+  }
+}, 15 * 60 * 1000);
+
 /* ---------------- HTML HELPERS ---------------- */
 
 function htmlHeader(title) {
@@ -173,6 +253,7 @@ function htmlFooter(active) {
       <a href="/" class="${active === 'home' ? 'active' : ''}">Home</a>
       <a href="/leaderboard" class="${active === 'leaders' ? 'active' : ''}">Leaders</a>
       <a href="/forum" class="${active === 'forum' ? 'active' : ''}">Forum</a>
+      <a href="/settle" class="${active === 'settle' ? 'active' : ''}">Settle</a>
     </div>
   </body>
   </html>
@@ -265,14 +346,23 @@ app.get('/me', async (req, res) => {
     html += `<p>No bets yet. Go to <a href="/">Home</a> and pick a match.</p>`;
   } else {
     for (const b of bets) {
+      const statusColor = b.status === 'WON' ? '#22c55e' : b.status === 'LOST' ? '#ef4444' : '#9ca3af';
+      const netLabel = b.netPoints !== null
+        ? `<span style="color:${b.netPoints >= 0 ? '#22c55e' : '#ef4444'};font-weight:bold;">
+            ${b.netPoints >= 0 ? '+' : ''}${b.netPoints.toFixed(1)} pts
+           </span>`
+        : '';
       html += `
         <div class="card">
-          <div style="font-size:14px;">Fixture ID: ${b.fixtureId}</div>
-          <div style="font-size:12px;color:#9ca3af;">Tournament: ${b.leagueName}</div>
-          <div style="font-size:12px;color:#9ca3af;">Market: ${b.market} • Selection: ${b.selection}</div>
-          <div style="font-size:12px;color:#9ca3af;">Stake: ${b.stake} • Odds: ${b.lockedOdds}</div>
-          <div style="font-size:12px;color:#9ca3af;">Status: ${b.status}</div>
-          ${b.netPoints !== null ? `<div>Net: ${b.netPoints.toFixed(1)} pts</div>` : ''}
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div style="font-size:14px;">${b.leagueName}</div>
+            <span style="font-size:11px;font-weight:bold;color:${statusColor};border:1px solid ${statusColor};border-radius:4px;padding:2px 6px;">${b.status}</span>
+          </div>
+          <div style="font-size:12px;color:#9ca3af;margin-top:4px;">
+            Pick: <strong style="color:#e5e7eb;">${b.selection}</strong> @ ${b.lockedOdds} • Stake: ${b.stake} pts
+          </div>
+          ${b.result ? `<div style="font-size:12px;color:#9ca3af;">Result: ${b.result}</div>` : ''}
+          ${netLabel ? `<div style="margin-top:4px;">${netLabel}</div>` : ''}
         </div>
       `;
     }
@@ -423,7 +513,29 @@ app.post('/bet', async (req, res) => {
   `);
 });
 
-// LEADERBOARD – very simple (no settlement yet)
+// MANUAL SETTLE – trigger settlement and show summary
+app.get('/settle', async (req, res) => {
+  try {
+    const summary = await settlePendingBets();
+    let html = htmlHeader('Settlement - No Betting Zone');
+    html += `
+      <h2>Settlement</h2>
+      <div class="card">
+        <div>Bets settled: <strong>${summary.settled}</strong></div>
+        ${summary.errors.length ? `<div style="color:#ef4444;font-size:12px;margin-top:4px;">${summary.errors.join('<br>')}</div>` : ''}
+        ${summary.settled === 0 && !summary.errors.length ? `<div style="font-size:12px;color:#9ca3af;margin-top:4px;">No pending bets matched any finished fixtures.</div>` : ''}
+      </div>
+      <p><a href="/">Back to home</a> • <a href="/leaderboard">View leaderboard</a></p>
+    `;
+    html += htmlFooter('home');
+    res.send(html);
+  } catch (e) {
+    console.error(e);
+    res.status(500).send('Settlement error');
+  }
+});
+
+// LEADERBOARD
 app.get('/leaderboard', async (req, res) => {
   const keys = await db.list('user:');
   const users = [];
