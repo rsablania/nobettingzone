@@ -251,6 +251,7 @@ function htmlFooter(active) {
     </div>
     <div class="nav">
       <a href="/" class="${active === 'home' ? 'active' : ''}">Home</a>
+      <a href="/summary" class="${active === 'summary' ? 'active' : ''}">My Stats</a>
       <a href="/leaderboard" class="${active === 'leaders' ? 'active' : ''}">Leaders</a>
       <a href="/forum" class="${active === 'forum' ? 'active' : ''}">Forum</a>
       <a href="/settle" class="${active === 'settle' ? 'active' : ''}">Settle</a>
@@ -511,6 +512,104 @@ app.post('/bet', async (req, res) => {
       <p><a href="/">Back to home</a> or <a href="/me?name=${encodeURIComponent(user.name)}">view your bets</a></p>
     </body></html>
   `);
+});
+
+// MY PREDICTIONS SUMMARY PAGE
+app.get('/summary', async (req, res) => {
+  const name = (req.query.name || '').toString().trim();
+  if (!name) {
+    let html = htmlHeader('My Predictions - No Betting Zone');
+    html += `
+      <h2>My Predictions</h2>
+      <p>Enter your name to see your prediction history:</p>
+      <form method="GET" action="/summary">
+        <input name="name" placeholder="Your name" required style="width:70%;max-width:280px;">
+        <button type="submit" style="margin-left:8px;">View</button>
+      </form>
+    `;
+    html += htmlFooter('summary');
+    res.send(html);
+    return;
+  }
+
+  const user = await getUser(name);
+  const bets = (await getBets()).filter(b => b.user === user.name);
+
+  const total = bets.length;
+  const won = bets.filter(b => b.status === 'WON').length;
+  const lost = bets.filter(b => b.status === 'LOST').length;
+  const pending = bets.filter(b => b.status === 'PENDING').length;
+  const winRate = total - pending > 0 ? Math.round((won / (total - pending)) * 100) : 0;
+  const totalNet = user.totalNetPoints;
+
+  let html = htmlHeader(`${user.name} - My Predictions`);
+  html += `
+    <h2 style="margin-bottom:4px;">${user.name}</h2>
+    <p style="color:#9ca3af;font-size:13px;margin-top:0;">Prediction history</p>
+
+    <!-- Stats strip -->
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:16px;">
+      <div class="card" style="text-align:center;">
+        <div style="font-size:22px;font-weight:bold;color:#e5e7eb;">${total}</div>
+        <div style="font-size:11px;color:#9ca3af;margin-top:2px;">TOTAL PICKS</div>
+      </div>
+      <div class="card" style="text-align:center;">
+        <div style="font-size:22px;font-weight:bold;color:${totalNet >= 0 ? '#22c55e' : '#ef4444'};">${totalNet >= 0 ? '+' : ''}${totalNet.toFixed(1)}</div>
+        <div style="font-size:11px;color:#9ca3af;margin-top:2px;">NET POINTS</div>
+      </div>
+      <div class="card" style="text-align:center;">
+        <div style="font-size:22px;font-weight:bold;color:#22c55e;">${won}</div>
+        <div style="font-size:11px;color:#9ca3af;margin-top:2px;">WINS</div>
+      </div>
+      <div class="card" style="text-align:center;">
+        <div style="font-size:22px;font-weight:bold;color:#ef4444;">${lost}</div>
+        <div style="font-size:11px;color:#9ca3af;margin-top:2px;">LOSSES</div>
+      </div>
+    </div>
+
+    <!-- Win rate bar -->
+    ${total - pending > 0 ? `
+    <div class="card" style="margin-bottom:16px;">
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:#9ca3af;margin-bottom:6px;">
+        <span>Win rate</span><span style="color:#e5e7eb;font-weight:bold;">${winRate}%</span>
+      </div>
+      <div style="background:#1f2937;border-radius:4px;height:8px;overflow:hidden;">
+        <div style="background:#22c55e;height:100%;width:${winRate}%;border-radius:4px;transition:width 0.3s;"></div>
+      </div>
+      <div style="font-size:11px;color:#9ca3af;margin-top:4px;">${won}W / ${lost}L${pending > 0 ? ` / ${pending} pending` : ''}</div>
+    </div>` : ''}
+
+    <h3 style="font-size:14px;margin-bottom:8px;">All Predictions</h3>
+  `;
+
+  if (!bets.length) {
+    html += `<p style="color:#9ca3af;">No predictions yet. <a href="/">Pick a match</a> to get started.</p>`;
+  } else {
+    // newest first
+    const sorted = [...bets].reverse();
+    for (const b of sorted) {
+      const statusColor = b.status === 'WON' ? '#22c55e' : b.status === 'LOST' ? '#ef4444' : '#9ca3af';
+      const netLabel = b.netPoints !== null
+        ? `<span style="font-weight:bold;color:${b.netPoints >= 0 ? '#22c55e' : '#ef4444'};">${b.netPoints >= 0 ? '+' : ''}${b.netPoints.toFixed(1)} pts</span>`
+        : `<span style="color:#9ca3af;">Pending</span>`;
+      html += `
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div style="font-size:13px;font-weight:bold;">${b.leagueName}</div>
+            <span style="font-size:11px;font-weight:bold;color:${statusColor};border:1px solid ${statusColor};border-radius:4px;padding:2px 6px;">${b.status}</span>
+          </div>
+          <div style="font-size:12px;color:#9ca3af;margin-top:4px;">
+            Pick: <strong style="color:#e5e7eb;">${b.selection}</strong> @ ${b.lockedOdds} • Stake: ${b.stake} pts
+          </div>
+          ${b.result ? `<div style="font-size:12px;color:#9ca3af;">Result: <strong style="color:#e5e7eb;">${b.result}</strong></div>` : ''}
+          <div style="font-size:13px;margin-top:6px;">${netLabel}</div>
+        </div>
+      `;
+    }
+  }
+
+  html += htmlFooter('summary');
+  res.send(html);
 });
 
 // MANUAL SETTLE – trigger settlement and show summary
