@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Node.js REPL"
+version = "1.0.0"
+id = "artifacts/node-repl"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 22691
+
+[services.development]
+run = "pnpm --filter @workspace/node-repl run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/node-repl", "run", "build" ]
+publicDir = "artifacts/node-repl/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "22691"
+BASE_PATH = "/"

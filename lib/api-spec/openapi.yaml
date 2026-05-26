@@ -3,13 +3,15 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: Node.js REPL API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: repl
+    description: REPL execution operations
 paths:
   /healthz:
     get:
@@ -24,6 +26,110 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /repl/execute:
+    post:
+      operationId: executeCode
+      tags: [repl]
+      summary: Execute Node.js code
+      description: Executes a JavaScript/Node.js code snippet and returns stdout, stderr, and any error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecuteInput"
+      responses:
+        "200":
+          description: Execution result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecuteResult"
+
+  /repl/sessions:
+    get:
+      operationId: listSessions
+      tags: [repl]
+      summary: List saved REPL sessions
+      description: Returns all saved REPL sessions
+      responses:
+        "200":
+          description: List of sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Session"
+    post:
+      operationId: createSession
+      tags: [repl]
+      summary: Save a REPL session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SessionInput"
+      responses:
+        "201":
+          description: Created session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+
+  /repl/sessions/{id}:
+    get:
+      operationId: getSession
+      tags: [repl]
+      summary: Get a saved session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "404":
+          description: Not found
+    delete:
+      operationId: deleteSession
+      tags: [repl]
+      summary: Delete a saved session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  /repl/history:
+    get:
+      operationId: getHistory
+      tags: [repl]
+      summary: Get recent execution history
+      description: Returns recent code executions with their outputs
+      responses:
+        "200":
+          description: History entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/HistoryEntry"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +140,103 @@ components:
       required:
         - status
 
+    ExecuteInput:
+      type: object
+      required:
+        - code
+      properties:
+        code:
+          type: string
+          description: JavaScript/Node.js code to execute
+        timeout:
+          type: ["integer", "null"]
+          description: Execution timeout in milliseconds (default 10000)
+
+    ExecuteResult:
+      type: object
+      required:
+        - stdout
+        - stderr
+        - exitCode
+        - executionTimeMs
+      properties:
+        stdout:
+          type: string
+          description: Standard output from the code
+        stderr:
+          type: string
+          description: Standard error output
+        exitCode:
+          type: integer
+          description: Exit code (0 = success)
+        executionTimeMs:
+          type: integer
+          description: How long execution took in milliseconds
+        error:
+          type: ["string", "null"]
+          description: Error message if execution failed
+
+    Session:
+      type: object
+      required:
+        - id
+        - name
+        - code
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        code:
+          type: string
+        description:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    SessionInput:
+      type: object
+      required:
+        - name
+        - code
+      properties:
+        name:
+          type: string
+          minLength: 1
+        code:
+          type: string
+        description:
+          type: string
+
+    HistoryEntry:
+      type: object
+      required:
+        - id
+        - code
+        - stdout
+        - stderr
+        - exitCode
+        - executionTimeMs
+        - executedAt
+      properties:
+        id:
+          type: integer
+        code:
+          type: string
+        stdout:
+          type: string
+        stderr:
+          type: string
+        exitCode:
+          type: integer
+        executionTimeMs:
+          type: integer
+        executedAt:
+          type: string
+          format: date-time
