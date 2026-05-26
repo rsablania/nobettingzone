@@ -35,18 +35,32 @@ async function apiGet(path, params) {
 }
 
 // Get upcoming fixtures across ALL tournaments
-// We take next 50 fixtures from the API and group by league (tournament) name
+// Free plan supports date= but not next= or last=
 async function getUpcomingFixtures() {
   const now = Date.now();
   if (upcomingCache.length && now - upcomingCacheTime < 5 * 60 * 1000) {
     return upcomingCache;
   }
 
-  // next=50 → upcoming 50 fixtures from all leagues
-  const fixtures = await apiGet('/fixtures', { next: '50' });
+  // Fetch today + next 2 days (free plan only supports date param)
+  const dates = [0, 1, 2].map(offset => {
+    const d = new Date();
+    d.setDate(d.getDate() + offset);
+    return d.toISOString().split('T')[0];
+  });
 
-  // Filter to not-started or soon
-  const upcoming = fixtures.filter(f =>
+  const allFixtures = [];
+  for (const date of dates) {
+    try {
+      const fixtures = await apiGet('/fixtures', { date });
+      allFixtures.push(...fixtures);
+    } catch (e) {
+      console.error('Fixtures fetch error for', date, e.message);
+    }
+  }
+
+  // Only not-yet-started fixtures
+  const upcoming = allFixtures.filter(f =>
     ['TBD', 'NS'].includes(f.fixture.status.short)
   );
 
@@ -73,31 +87,34 @@ function getStage(fixture) {
   return 'KNOCKOUT';
 }
 
-// Get simple 1X2 odds for a fixture (if available)
+// Default odds used when the API doesn't provide them (free plan restriction)
+const DEFAULT_ODDS = [
+  { value: 'Home', odd: '1.90' },
+  { value: 'Draw', odd: '3.20' },
+  { value: 'Away', odd: '2.10' },
+];
+
+// Get 1X2 odds for a fixture — falls back to defaults on free plan
 async function getOddsForFixture(fixtureId) {
   try {
     const oddsResp = await apiGet('/odds', { fixture: String(fixtureId) });
-    if (!oddsResp.length) return null;
+    if (!oddsResp || !oddsResp.length) return DEFAULT_ODDS;
 
-    // API-Football structure: response[0].bookmakers[0].bets[x].values[]
     const first = oddsResp[0];
     const bookmakers = first.bookmakers || [];
-    if (!bookmakers.length) return null;
+    if (!bookmakers.length) return DEFAULT_ODDS;
 
     const bets = bookmakers[0].bets || [];
-    // Try to find a "Match Winner" market (1X2)
     const matchResult = bets.find(
-      b =>
-        (b.name && b.name.toLowerCase().includes('winner')) ||
-        b.id === 1
+      b => (b.name && b.name.toLowerCase().includes('winner')) || b.id === 1
     ) || bets[0];
 
-    if (!matchResult) return null;
+    if (!matchResult) return DEFAULT_ODDS;
     const values = matchResult.values || [];
-    return values; // array of { value: 'Home', odd: '1.80' } etc.
+    return values.length ? values : DEFAULT_ODDS;
   } catch (e) {
     console.error('Odds error', e.message);
-    return null;
+    return DEFAULT_ODDS;
   }
 }
 
@@ -159,15 +176,25 @@ function getMatchResult(fixture) {
 async function settlePendingBets() {
   const summary = { settled: 0, errors: [] };
 
-  let finishedFixtures;
-  try {
-    finishedFixtures = await apiGet('/fixtures', { status: 'FT', last: '30' });
-  } catch (e) {
-    summary.errors.push(`API error fetching finished fixtures: ${e.message}`);
-    return summary;
+  // Free plan only supports date= not last= or status= alone
+  // Fetch today + yesterday and filter for FT status
+  const datesToCheck = [0, -1, -2].map(offset => {
+    const d = new Date();
+    d.setDate(d.getDate() + offset);
+    return d.toISOString().split('T')[0];
+  });
+
+  const finishedFixtures = [];
+  for (const date of datesToCheck) {
+    try {
+      const fixtures = await apiGet('/fixtures', { date });
+      finishedFixtures.push(...fixtures.filter(f => f.fixture.status.short === 'FT'));
+    } catch (e) {
+      summary.errors.push(`API error fetching fixtures for ${date}: ${e.message}`);
+    }
   }
 
-  if (!finishedFixtures || !finishedFixtures.length) return summary;
+  if (!finishedFixtures.length) return summary;
 
   const allBets = await getBets();
   const pendingBets = allBets.filter(b => b.status === 'PENDING');
@@ -406,31 +433,20 @@ app.get('/match', async (req, res) => {
         <p>Pick result (1X2):</p>
     `;
 
-    if (odds && odds.length) {
-      odds.forEach(o => {
-        html += `
-          <div style="margin-bottom:4px;">
-            <label>
-              <input type="radio" name="selection" value="${o.value}" required>
-              ${o.value} @ ${o.odd}
-            </label>
-          </div>
-        `;
-      });
-    } else {
+    // Map value labels to human-readable team names
+    const labelMap = { Home: `${home} wins`, Draw: 'Draw', Away: `${away} wins` };
+    odds.forEach(o => {
+      const label = labelMap[o.value] || o.value;
       html += `
-        <p style="font-size:12px;color:#9ca3af;">No odds available yet from provider. You can still pick a result.</p>
-        <div style="margin-bottom:4px;">
-          <label><input type="radio" name="selection" value="Home" required> ${home} wins</label>
-        </div>
-        <div style="margin-bottom:4px;">
-          <label><input type="radio" name="selection" value="Draw"> Draw</label>
-        </div>
-        <div style="margin-bottom:4px;">
-          <label><input type="radio" name="selection" value="Away"> ${away} wins</label>
+        <div style="margin-bottom:8px;">
+          <label style="display:flex;align-items:center;gap:10px;background:#111827;border:1px solid #1f2937;border-radius:8px;padding:10px 12px;cursor:pointer;">
+            <input type="radio" name="selection" value="${o.value}" required style="accent-color:#22c55e;width:18px;height:18px;">
+            <span style="flex:1;font-size:14px;">${label}</span>
+            <span style="font-size:13px;font-weight:bold;color:#22c55e;">${o.odd}</span>
+          </label>
         </div>
       `;
-    }
+    });
 
     html += `
         <button type="submit" style="margin-top:12px;width:100%;">Place Bet</button>
