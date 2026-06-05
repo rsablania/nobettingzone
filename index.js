@@ -51,18 +51,32 @@ const oddsSportCache = {};
 function normalizeName(name) {
   return name
     .toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/\b(fc|cf|sc|ac|if|bk|fk|sk|nk|gd|cd|ca|sd|as|ss|us|afc|utd|united|city)\b/g, '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // strip accents
+    .replace(/-[a-z]{2,3}$/i, '')                    // strip state codes: -RJ, -SP, -MG, -BA etc.
+    .replace(/\b(fc|cf|sc|ac|if|bk|fk|sk|nk|gd|cd|ca|sd|as|ss|us|afc|utd|united|city|de|del|la|el|los|las)\b/g, '')
     .replace(/[^a-z0-9 ]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+// Strip short tokens (abbreviations like L.P., F.C.) for loose matching
+function matchKey(name) {
+  return normalizeName(name).split(' ').filter(w => w.length > 2).join(' ');
 }
 
 function teamsMatch(a, b) {
   const na = normalizeName(a);
   const nb = normalizeName(b);
   if (na === nb) return true;
-  if (na.length > 3 && nb.length > 3) return na.includes(nb) || nb.includes(na);
+  if (na.length > 4 && nb.length > 4) {
+    if (na.includes(nb) || nb.includes(na)) return true;
+    // Loose match ignoring short abbreviations (handles "L.P." vs "La Plata")
+    const ma = matchKey(a);
+    const mb = matchKey(b);
+    if (ma && mb && ma.length > 4 && mb.length > 4) {
+      if (ma.includes(mb) || mb.includes(ma)) return true;
+    }
+  }
   return false;
 }
 
