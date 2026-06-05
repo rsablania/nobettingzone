@@ -7,217 +7,114 @@ const db = new Database();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const API_KEY = process.env.API_FOOTBALL_KEY;
-const API_BASE = 'https://v3.football.api-sports.io';
-
 const ODDS_API_KEY = process.env.THE_ODDS_API_KEY;
 const ODDS_API_BASE = 'https://api.the-odds-api.com/v4';
 
-// Map API-Football league names → The Odds API sport keys
-// Checked against the 21 soccer sports available on the free plan
-const LEAGUE_TO_SPORT_KEY = {
-  'premier league':                      'soccer_epl',
-  'ligue 1':                             'soccer_france_ligue_one',
-  'bundesliga 2':                        'soccer_germany_bundesliga2',
-  'serie b':                             'soccer_italy_serie_b',
-  'allsvenskan':                         'soccer_sweden_allsvenskan',
-  'superettan':                          'soccer_sweden_superettan',
-  'eliteserien':                         'soccer_norway_eliteserien',
-  'veikkausliiga':                       'soccer_finland_veikkausliiga',
-  'first division a':                    'soccer_belgium_first_div',
-  'belgian pro league':                  'soccer_belgium_first_div',
-  'league of ireland':                   'soccer_league_of_ireland',
-  'super league':                        'soccer_china_superleague',
-  'j1 league':                           'soccer_japan_j_league',
-  'j league':                            'soccer_japan_j_league',
-  'brasileirao serie a':                 'soccer_brazil_campeonato',
-  'brasileiro serie a':                  'soccer_brazil_campeonato',
-  'brasileirao serie b':                 'soccer_brazil_serie_b',
-  'copa libertadores':                   'soccer_conmebol_copa_libertadores',
-  'conmebol libertadores':               'soccer_conmebol_copa_libertadores',
-  'copa sudamericana':                   'soccer_conmebol_copa_sudamericana',
-  'conmebol sudamericana':               'soccer_conmebol_copa_sudamericana',
-  'primera division':                    'soccer_chile_campeonato',
-  'primera división':                    'soccer_chile_campeonato',
-  'champions league':                    'soccer_uefa_champs_league',
-  'uefa champions league':               'soccer_uefa_champs_league',
-  'conference league':                   'soccer_uefa_europa_conference_league',
-  'uefa europa conference league':       'soccer_uefa_europa_conference_league',
-};
+const TIMEZONE = 'Asia/Kolkata';
 
-// Cache odds per sport key for 30 minutes to conserve the 500 req/month quota
-const oddsSportCache = {};
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
 
-function normalizeName(name) {
-  return name
-    .toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // strip accents
-    .replace(/-[a-z]{2,3}$/i, '')                    // strip state codes: -RJ, -SP, -MG, -BA etc.
-    .replace(/\b(fc|cf|sc|ac|if|bk|fk|sk|nk|gd|cd|ca|sd|as|ss|us|afc|utd|united|city|de|del|la|el|los|las)\b/g, '')
-    .replace(/[^a-z0-9 ]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
+// All soccer sport keys on The Odds API free plan
+const SOCCER_SPORT_KEYS = [
+  'soccer_belgium_first_div',
+  'soccer_brazil_campeonato',
+  'soccer_brazil_serie_b',
+  'soccer_chile_campeonato',
+  'soccer_china_superleague',
+  'soccer_conmebol_copa_libertadores',
+  'soccer_conmebol_copa_sudamericana',
+  'soccer_epl',
+  'soccer_finland_veikkausliiga',
+  'soccer_france_ligue_one',
+  'soccer_germany_bundesliga2',
+  'soccer_italy_serie_b',
+  'soccer_japan_j_league',
+  'soccer_league_of_ireland',
+  'soccer_norway_eliteserien',
+  'soccer_spain_segunda_division',
+  'soccer_sweden_allsvenskan',
+  'soccer_sweden_superettan',
+  'soccer_uefa_champs_league',
+  'soccer_uefa_europa_conference_league',
+  'soccer_fifa_world_cup',
+];
 
-// Strip short tokens (abbreviations like L.P., F.C.) for loose matching
-function matchKey(name) {
-  return normalizeName(name).split(' ').filter(w => w.length > 2).join(' ');
-}
+// Cache per sport — 6 hour TTL to stay within 500 req/month free quota
+const eventsCache = {};
+const CACHE_TTL = 6 * 60 * 60 * 1000;
 
-function teamsMatch(a, b) {
-  const na = normalizeName(a);
-  const nb = normalizeName(b);
-  if (na === nb) return true;
-  if (na.length > 4 && nb.length > 4) {
-    if (na.includes(nb) || nb.includes(na)) return true;
-    // Loose match ignoring short abbreviations (handles "L.P." vs "La Plata")
-    const ma = matchKey(a);
-    const mb = matchKey(b);
-    if (ma && mb && ma.length > 4 && mb.length > 4) {
-      if (ma.includes(mb) || mb.includes(ma)) return true;
-    }
-  }
-  return false;
-}
-
-async function getOddsFromOddsAPI(homeTeam, awayTeam, leagueName) {
-  if (!ODDS_API_KEY) return null;
-  const leagueKey = leagueName.toLowerCase().trim();
-  let sportKey = null;
-  for (const [pattern, key] of Object.entries(LEAGUE_TO_SPORT_KEY)) {
-    if (leagueKey.includes(pattern) || pattern.includes(leagueKey)) {
-      sportKey = key;
-      break;
-    }
-  }
-  if (!sportKey) return null;
-
+// Fetch upcoming fixtures + real odds from The Odds API for all covered leagues
+async function getAllUpcomingFixtures() {
   const now = Date.now();
-  if (!oddsSportCache[sportKey] || now - oddsSportCache[sportKey].time > 30 * 60 * 1000) {
+  const all = [];
+  for (const sportKey of SOCCER_SPORT_KEYS) {
+    const cached = eventsCache[sportKey];
+    if (cached && now - cached.time < CACHE_TTL) {
+      all.push(...cached.events);
+      continue;
+    }
     try {
       const resp = await axios.get(`${ODDS_API_BASE}/sports/${sportKey}/odds`, {
         params: { apiKey: ODDS_API_KEY, regions: 'eu', markets: 'h2h', oddsFormat: 'decimal' }
       });
-      oddsSportCache[sportKey] = { time: now, events: resp.data };
+      const events = Array.isArray(resp.data) ? resp.data : [];
+      eventsCache[sportKey] = { time: now, events };
+      all.push(...events);
+      const rem = resp.headers['x-requests-remaining'];
+      if (events.length > 0) console.log(`[OddsAPI] ${sportKey}: ${events.length} events. Credits left: ${rem}`);
     } catch (e) {
-      console.error('Odds API fetch error:', e.message);
-      return null;
+      console.error(`[OddsAPI] error [${sportKey}]:`, e.message);
+      if (cached) all.push(...cached.events);
     }
   }
+  // Only future events
+  const future = new Date();
+  return all.filter(e => new Date(e.commence_time) > future);
+}
 
-  const events = oddsSportCache[sportKey].events || [];
-  const event = events.find(e =>
-    teamsMatch(e.home_team, homeTeam) && teamsMatch(e.away_team, awayTeam)
-  );
-  if (!event || !event.bookmakers.length) return null;
+// Find a single event by its Odds API UUID
+async function getEventById(id) {
+  for (const cached of Object.values(eventsCache)) {
+    const found = cached.events.find(e => e.id === id);
+    if (found) return found;
+  }
+  // Cache miss — refresh and retry once
+  await getAllUpcomingFixtures();
+  for (const cached of Object.values(eventsCache)) {
+    const found = cached.events.find(e => e.id === id);
+    if (found) return found;
+  }
+  return null;
+}
 
-  const market = event.bookmakers[0].markets.find(m => m.key === 'h2h');
-  if (!market) return null;
-
+// Extract h2h odds from an event → [{ value:'Home'|'Draw'|'Away', odd:'1.90' }]
+function extractOdds(event) {
+  if (!event?.bookmakers?.length) return null;
+  const market = event.bookmakers[0].markets?.find(m => m.key === 'h2h');
+  if (!market?.outcomes?.length) return null;
+  const order = { Home: 0, Draw: 1, Away: 2 };
   const outcomes = market.outcomes.map(o => {
-    let value;
+    let value = 'Away';
     if (o.name === 'Draw') value = 'Draw';
-    else if (teamsMatch(o.name, homeTeam)) value = 'Home';
-    else value = 'Away';
+    else if (o.name === event.home_team) value = 'Home';
     return { value, odd: Number(o.price).toFixed(2) };
   });
-  const order = { Home: 0, Draw: 1, Away: 2 };
   outcomes.sort((a, b) => order[a.value] - order[b.value]);
   return outcomes.length === 3 ? outcomes : null;
 }
 
-// Timezone for display (India)
-const TIMEZONE = 'Asia/Kolkata';
-
-// Express body parsing
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
-
-// In-memory cache to reduce API calls
-let upcomingCache = [];
-let upcomingCacheTime = 0;
-
-// Helper: call API-Football
-async function apiGet(path, params) {
-  const url = new URL(API_BASE + path);
-  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
-  const res = await axios.get(url.toString(), {
-    headers: {
-      'x-apisports-key': API_KEY
-    }
-  });
-  return res.data.response;
-}
-
-// Get upcoming fixtures across ALL tournaments
-// Free plan supports date= but not next= or last=
-async function getUpcomingFixtures() {
-  const now = Date.now();
-  if (upcomingCache.length && now - upcomingCacheTime < 5 * 60 * 1000) {
-    return upcomingCache;
-  }
-
-  // Fetch today + next 2 days (free plan only supports date param)
-  const dates = [0, 1, 2].map(offset => {
-    const d = new Date();
-    d.setDate(d.getDate() + offset);
-    return d.toISOString().split('T')[0];
-  });
-
-  const allFixtures = [];
-  for (const date of dates) {
-    try {
-      const fixtures = await apiGet('/fixtures', { date });
-      allFixtures.push(...fixtures);
-    } catch (e) {
-      console.error('Fixtures fetch error for', date, e.message);
-    }
-  }
-
-  // Only not-yet-started fixtures
-  const upcoming = allFixtures.filter(f =>
-    ['TBD', 'NS'].includes(f.fixture.status.short)
-  );
-
-  upcomingCache = upcoming;
-  upcomingCacheTime = now;
-  return upcoming;
-}
-
-// Find a fixture by its ID from upcoming (fallback to direct API call if needed)
-async function getFixtureById(id) {
-  const upcoming = await getUpcomingFixtures();
-  let fixture = upcoming.find(f => String(f.fixture.id) === String(id));
-  if (fixture) return fixture;
-
-  // Fallback: fetch directly
-  const fixtures = await apiGet('/fixtures', { id: String(id) });
-  return fixtures[0] || null;
-}
-
-// Determine stage (best-effort) from round name
-function getStage(fixture) {
-  const round = (fixture.league && fixture.league.round) || '';
-  if (round.toLowerCase().includes('group')) return 'GROUP';
-  return 'KNOCKOUT';
-}
-
-// Default odds — used when a league isn't covered by The Odds API free plan
-const DEFAULT_ODDS = [
-  { value: 'Home', odd: '1.90' },
-  { value: 'Draw', odd: '3.20' },
-  { value: 'Away', odd: '2.10' },
-];
-
-// Try The Odds API first; fall back to defaults for uncovered leagues
-async function getOddsForFixture(homeTeam, awayTeam, leagueName) {
-  try {
-    const real = await getOddsFromOddsAPI(homeTeam, awayTeam, leagueName);
-    if (real) return real;
-  } catch (e) {
-    console.error('Odds error:', e.message);
-  }
-  return DEFAULT_ODDS;
+// Determine match result from Odds API score object
+function getResultFromScore(scoreEvent) {
+  if (!scoreEvent.scores?.length) return null;
+  const homeScore = scoreEvent.scores.find(s => s.name === scoreEvent.home_team);
+  const awayScore = scoreEvent.scores.find(s => s.name === scoreEvent.away_team);
+  const hs = parseInt(homeScore?.score ?? scoreEvent.scores[0]?.score);
+  const as = parseInt(awayScore?.score ?? scoreEvent.scores[1]?.score);
+  if (isNaN(hs) || isNaN(as)) return null;
+  if (hs > as) return 'Home';
+  if (as > hs) return 'Away';
+  return 'Draw';
 }
 
 /* ---------------- REPLIT DB HELPERS ---------------- */
@@ -264,59 +161,41 @@ async function updateBets(updatedBets) {
 
 /* ---------------- SETTLEMENT ENGINE ---------------- */
 
-// Determine match result string from API fixture data
-function getMatchResult(fixture) {
-  const home = fixture.teams.home;
-  const away = fixture.teams.away;
-  if (home.winner === true) return 'Home';
-  if (away.winner === true) return 'Away';
-  return 'Draw';
-}
-
-// Settle all pending bets for recently finished fixtures
-// Returns a summary { settled, errors }
 async function settlePendingBets() {
   const summary = { settled: 0, errors: [] };
-
-  // Free plan only supports date= not last= or status= alone
-  // Fetch today + yesterday and filter for FT status
-  const datesToCheck = [0, -1, -2].map(offset => {
-    const d = new Date();
-    d.setDate(d.getDate() + offset);
-    return d.toISOString().split('T')[0];
-  });
-
-  const finishedFixtures = [];
-  for (const date of datesToCheck) {
-    try {
-      const fixtures = await apiGet('/fixtures', { date });
-      finishedFixtures.push(...fixtures.filter(f => f.fixture.status.short === 'FT'));
-    } catch (e) {
-      summary.errors.push(`API error fetching fixtures for ${date}: ${e.message}`);
-    }
-  }
-
-  if (!finishedFixtures.length) return summary;
 
   const allBets = await getBets();
   const pendingBets = allBets.filter(b => b.status === 'PENDING');
   if (!pendingBets.length) return summary;
 
-  // Build a map of fixtureId → result for fast lookup
-  const resultMap = {};
-  for (const f of finishedFixtures) {
-    resultMap[String(f.fixture.id)] = getMatchResult(f);
+  // Only fetch scores for sport keys that have pending bets
+  const sportKeys = [...new Set(pendingBets.map(b => b.sportKey).filter(Boolean))];
+  if (!sportKeys.length) return summary;
+
+  const resultMap = {}; // eventId → 'Home' | 'Away' | 'Draw'
+  for (const sportKey of sportKeys) {
+    try {
+      const resp = await axios.get(`${ODDS_API_BASE}/sports/${sportKey}/scores`, {
+        params: { apiKey: ODDS_API_KEY, daysFrom: 3, dateFormat: 'iso' }
+      });
+      const scores = Array.isArray(resp.data) ? resp.data : [];
+      for (const s of scores.filter(s => s.completed)) {
+        const result = getResultFromScore(s);
+        if (result) resultMap[s.id] = result;
+      }
+    } catch (e) {
+      summary.errors.push(`Scores error [${sportKey}]: ${e.message}`);
+    }
   }
 
   let changed = false;
   for (const bet of allBets) {
     if (bet.status !== 'PENDING') continue;
-    const result = resultMap[String(bet.fixtureId)];
-    if (!result) continue; // fixture not finished yet
+    const result = resultMap[bet.fixtureId];
+    if (!result) continue;
 
     const won = bet.selection === result;
     bet.status = won ? 'WON' : 'LOST';
-    // Net points: profit on win (odds-based), full stake lost on miss
     bet.netPoints = won
       ? Math.round(bet.stake * (parseFloat(bet.lockedOdds) - 1) * 10) / 10
       : -bet.stake;
@@ -324,7 +203,6 @@ async function settlePendingBets() {
     changed = true;
     summary.settled++;
 
-    // Update user total
     try {
       const user = await getUser(bet.user);
       user.totalNetPoints = Math.round((user.totalNetPoints + bet.netPoints) * 10) / 10;
@@ -338,7 +216,7 @@ async function settlePendingBets() {
   return summary;
 }
 
-// Auto-settle every 15 minutes
+// Auto-settle every 60 minutes (conserves Odds API credits)
 setInterval(async () => {
   try {
     const s = await settlePendingBets();
@@ -346,7 +224,7 @@ setInterval(async () => {
   } catch (e) {
     console.error('Auto-settlement error:', e.message);
   }
-}, 15 * 60 * 1000);
+}, 60 * 60 * 1000);
 
 /* ---------------- HTML HELPERS ---------------- */
 
@@ -392,17 +270,16 @@ function htmlFooter(active) {
 
 /* ---------------- ROUTES ---------------- */
 
-// HOME / DASHBOARD – upcoming matches grouped by tournament (league)
+// HOME / DASHBOARD – upcoming matches from The Odds API, grouped by league
 app.get('/', async (req, res) => {
   try {
-    const fixtures = await getUpcomingFixtures();
+    const events = await getAllUpcomingFixtures();
 
-    // Group by league name
     const byLeague = {};
-    for (const f of fixtures) {
-      const leagueName = f.league && f.league.name ? f.league.name : 'Unknown Tournament';
-      if (!byLeague[leagueName]) byLeague[leagueName] = [];
-      byLeague[leagueName].push(f);
+    for (const ev of events) {
+      const title = ev.sport_title || 'Unknown League';
+      if (!byLeague[title]) byLeague[title] = [];
+      byLeague[title].push(ev);
     }
 
     let html = htmlHeader('No Betting Zone - Home');
@@ -410,39 +287,31 @@ app.get('/', async (req, res) => {
       <div class="title">No Betting Zone</div>
       <p style="font-size:14px;color:#9ca3af;">Points-based football prediction game. No real money.</p>
 
-      <p>Enter your name to track your bets:</p>
+      <p>Enter your name to track your predictions:</p>
       <form method="GET" action="/me" style="margin-bottom:16px;">
         <input name="name" placeholder="Your name" required style="width:60%;max-width:260px;">
         <button type="submit">Go</button>
       </form>
 
-      <h3>Upcoming matches (all tournaments)</h3>
+      <h3>Upcoming matches</h3>
     `;
 
     const leagueNames = Object.keys(byLeague).sort();
     if (!leagueNames.length) {
-      html += `<p>No upcoming fixtures found.</p>`;
+      html += `<p style="color:#9ca3af;">No upcoming fixtures available. Check back later.</p>`;
     } else {
       for (const leagueName of leagueNames) {
         html += `<h4 style="margin-top:12px;font-size:14px;">${leagueName}</h4>`;
-        const list = byLeague[leagueName].slice(0, 10); // cap per tournament
-        for (const f of list) {
-          const id = f.fixture.id;
-          const home = f.teams.home.name;
-          const away = f.teams.away.name;
-          const date = moment(f.fixture.date).tz(TIMEZONE).format('DD MMM, HH:mm');
-          const stage = getStage(f);
-          const stake = stage === 'GROUP' ? 50 : 100;
+        const list = byLeague[leagueName].slice(0, 10);
+        for (const ev of list) {
+          const date = moment(ev.commence_time).tz(TIMEZONE).format('DD MMM, HH:mm');
           html += `
             <div class="card">
-              <div style="display:flex;justify-content:space-between;">
-                <div>${home} vs ${away}</div>
-                <div style="font-size:12px;color:#9ca3af;">${date}</div>
+              <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+                <div style="font-size:14px;">${ev.home_team} vs ${ev.away_team}</div>
+                <div style="font-size:12px;color:#9ca3af;white-space:nowrap;margin-left:8px;">${date}</div>
               </div>
-              <div style="font-size:12px;color:#9ca3af;margin-top:4px;">
-                Stage guess: ${stage} • Stake: ${stake} pts
-              </div>
-              <a href="/match?id=${id}">View & bet</a>
+              <a href="/match?id=${ev.id}" style="font-size:13px;margin-top:6px;display:inline-block;">View & predict →</a>
             </div>
           `;
         }
@@ -453,7 +322,7 @@ app.get('/', async (req, res) => {
     res.send(html);
   } catch (e) {
     console.error(e);
-    res.status(500).send('Error loading fixtures');
+    res.status(500).send('Error loading fixtures: ' + e.message);
   }
 });
 
@@ -502,32 +371,36 @@ app.get('/me', async (req, res) => {
   res.send(html);
 });
 
-// MATCH PAGE – single match view + 1X2 bet
+// MATCH PAGE – single match view + 1X2 prediction
 app.get('/match', async (req, res) => {
-  const fixtureId = req.query.id;
-  if (!fixtureId) return res.redirect('/');
+  const eventId = req.query.id;
+  if (!eventId) return res.redirect('/');
 
   try {
-    const fixture = await getFixtureById(fixtureId);
-    if (!fixture) return res.status(404).send('Match not found');
+    const event = await getEventById(eventId);
+    if (!event) return res.status(404).send('Match not found. It may have started or expired.');
 
-    const stage = getStage(fixture);
-    const stake = stage === 'GROUP' ? 50 : 100;
-    const home = fixture.teams.home.name;
-    const away = fixture.teams.away.name;
-    const date = moment(fixture.fixture.date).tz(TIMEZONE).format('DD MMM, HH:mm');
-    const leagueName = fixture.league?.name || 'Unknown Tournament';
-    const odds = await getOddsForFixture(home, away, leagueName);
+    const home = event.home_team;
+    const away = event.away_team;
+    const date = moment(event.commence_time).tz(TIMEZONE).format('DD MMM, HH:mm');
+    const leagueName = event.sport_title || 'Unknown League';
+    const odds = extractOdds(event);
+    const oddsToShow = odds || [
+      { value: 'Home', odd: '1.90' },
+      { value: 'Draw', odd: '3.20' },
+      { value: 'Away', odd: '2.10' },
+    ];
+    const stake = 100;
 
     let html = htmlHeader(`${home} vs ${away} - No Betting Zone`);
     html += `
       <h2>${home} vs ${away}</h2>
       <div style="font-size:12px;color:#9ca3af;">
-        ${leagueName} • ${date} • Stage guess: ${stage} • Stake: ${stake} pts
+        ${leagueName} • ${date} • Stake: ${stake} pts
       </div>
       <hr style="border-color:#1f2937;margin:12px 0;">
       <form method="POST" action="/bet">
-        <input type="hidden" name="fixtureId" value="${fixtureId}">
+        <input type="hidden" name="eventId" value="${eventId}">
         <input type="hidden" name="leagueName" value="${leagueName}">
         <p>Your name:</p>
         <input name="name" placeholder="Your name" required style="width:100%;margin-bottom:8px;">
@@ -535,15 +408,13 @@ app.get('/match', async (req, res) => {
         <p>Pick result (1X2):</p>
     `;
 
-    // Map value labels to human-readable team names
     const labelMap = { Home: `${home} wins`, Draw: 'Draw', Away: `${away} wins` };
-    odds.forEach(o => {
-      const label = labelMap[o.value] || o.value;
+    oddsToShow.forEach(o => {
       html += `
         <div style="margin-bottom:8px;">
           <label style="display:flex;align-items:center;gap:10px;background:#111827;border:1px solid #1f2937;border-radius:8px;padding:10px 12px;cursor:pointer;">
             <input type="radio" name="selection" value="${o.value}" required style="accent-color:#22c55e;width:18px;height:18px;">
-            <span style="flex:1;font-size:14px;">${label}</span>
+            <span style="flex:1;font-size:14px;">${labelMap[o.value] || o.value}</span>
             <span style="font-size:13px;font-weight:bold;color:#22c55e;">${o.odd}</span>
           </label>
         </div>
@@ -553,58 +424,51 @@ app.get('/match', async (req, res) => {
     html += `
         <button type="submit" style="margin-top:12px;width:100%;">Place Bet</button>
       </form>
-      <p style="margin-top:12px;"><a href="/">Back to Home</a></p>
+      <p style="margin-top:8px;font-size:11px;color:#6b7280;">${odds ? '📊 Live bookmaker odds' : '📊 Estimated odds'}</p>
+      <p><a href="/">Back to Home</a></p>
     `;
     html += htmlFooter('home');
     res.send(html);
   } catch (e) {
     console.error(e);
-    res.status(500).send('Error loading match');
+    res.status(500).send('Error loading match: ' + e.message);
   }
 });
 
-// HANDLE BET – one bet per user per fixture
+// HANDLE BET – one prediction per user per event
 app.post('/bet', async (req, res) => {
-  const { name, fixtureId, selection, leagueName } = req.body || {};
-  if (!name || !fixtureId || !selection) {
+  const { name, eventId, selection, leagueName } = req.body || {};
+  if (!name || !eventId || !selection) {
     return res.status(400).send('Missing fields');
   }
 
   const user = await getUser(name.trim());
-  const fixture = await getFixtureById(fixtureId);
-  if (!fixture) return res.status(400).send('Match not found');
+  const event = await getEventById(eventId);
+  if (!event) return res.status(400).send('Match not found');
 
-  const stage = getStage(fixture);
-  const stake = stage === 'GROUP' ? 50 : 100;
-
-  // Basic betting window: before kick-off (status NS/TBD)
-  if (!['NS', 'TBD'].includes(fixture.fixture.status.short)) {
-    return res.send('Betting closed for this match.');
+  // Betting window: event must be in the future
+  if (new Date(event.commence_time) <= new Date()) {
+    return res.send('Betting closed — this match has already started.');
   }
 
-  // Ensure only one bet per user per fixture
+  // One prediction per user per event
   const bets = await getBets();
-  const existing = bets.find(
-    b => b.user === user.name && String(b.fixtureId) === String(fixtureId)
-  );
+  const existing = bets.find(b => b.user === user.name && b.fixtureId === eventId);
   if (existing) {
     return res.send(`
       <html><body style="background:#020617;color:#e5e7eb;font-family:system-ui;padding:16px;">
         <h2>No Betting Zone</h2>
-        <p>You already placed a bet on this match.</p>
+        <p>You already placed a prediction on this match.</p>
         <p><a href="/">Back to home</a></p>
       </body></html>
     `);
   }
 
-  // Get latest odds to lock in the price at time of bet
-  const odds = await getOddsForFixture(
-    fixture.teams.home.name,
-    fixture.teams.away.name,
-    fixture.league?.name || ''
-  );
+  // Lock in odds from the event's bookmaker data
+  const odds = extractOdds(event);
+  const stake = 100;
   let lockedOdds = 2.0;
-  if (odds && odds.length) {
+  if (odds) {
     const match = odds.find(o => o.value === selection);
     if (match) lockedOdds = parseFloat(match.odd) || 2.0;
   }
@@ -612,26 +476,27 @@ app.post('/bet', async (req, res) => {
   const bet = {
     id: Date.now().toString(),
     user: user.name,
-    fixtureId,
-    leagueName: leagueName || (fixture.league?.name || 'Unknown Tournament'),
+    fixtureId: eventId,
+    sportKey: event.sport_key,
+    homeTeam: event.home_team,
+    awayTeam: event.away_team,
+    leagueName: leagueName || event.sport_title || 'Unknown League',
     market: 'MATCH_RESULT',
     selection,
     stake,
     lockedOdds,
     status: 'PENDING',
-    netPoints: null
+    netPoints: null,
+    result: null,
   };
 
   await addBet(bet);
 
-  // Note: settlement and NetPoints calculation not implemented yet in this prototype.
-  // Everyone's totalNetPoints stays 0 for now.
-
   res.send(`
     <html><body style="background:#020617;color:#e5e7eb;font-family:system-ui;padding:16px;">
-      <h2>No Betting Zone</h2>
-      <p>${user.name}, you placed ${stake} pts on "${selection}" @ ${lockedOdds} for fixture ${fixtureId}.</p>
-      <p><a href="/">Back to home</a> or <a href="/me?name=${encodeURIComponent(user.name)}">view your bets</a></p>
+      <h2>No Betting Zone ✓</h2>
+      <p>${user.name}, you predicted <strong>${selection}</strong> @ ${lockedOdds} — ${stake} pts staked.</p>
+      <p><a href="/" style="color:#22c55e;">Back to home</a> | <a href="/me?name=${encodeURIComponent(user.name)}" style="color:#22c55e;">View your bets</a></p>
     </body></html>
   `);
 });
