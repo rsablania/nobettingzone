@@ -40,53 +40,87 @@ const SOCCER_SPORT_KEYS = [
   'soccer_fifa_world_cup',
 ];
 
-// Cache per sport — 6 hour TTL to stay within 500 req/month free quota
-const eventsCache = {};
-const CACHE_TTL = 6 * 60 * 60 * 1000;
+// ── IN-MEMORY SNAPSHOT ───────────────────────────────────────────────────────
+// All fixture+odds data lives here. Populated from DB on startup, refreshed
+// once daily at 11 PM IST by the daily job. User requests NEVER call the API.
 
-// Fetch upcoming fixtures + real odds from The Odds API for all covered leagues
-async function getAllUpcomingFixtures() {
-  const now = Date.now();
-  const all = [];
-  for (const sportKey of SOCCER_SPORT_KEYS) {
-    const cached = eventsCache[sportKey];
-    if (cached && now - cached.time < CACHE_TTL) {
-      all.push(...cached.events);
-      continue;
+let fixtureSnapshot = [];   // array of Odds API event objects
+let snapshotMeta = null;    // { fetchedAt, creditsLeft }
+
+// Load the persisted snapshot from Replit DB into memory on startup
+async function loadFixturesFromDB() {
+  try {
+    const stored = await db.get('snapshot:fixtures');
+    if (stored && Array.isArray(stored.events)) {
+      fixtureSnapshot = stored.events;
+      snapshotMeta = { fetchedAt: stored.fetchedAt, creditsLeft: stored.creditsLeft };
+      console.log(`[Snapshot] Loaded ${fixtureSnapshot.length} events from DB (fetched ${stored.fetchedAt})`);
+    } else {
+      console.log('[Snapshot] No stored snapshot found — waiting for daily job at 11 PM IST.');
     }
+  } catch (e) {
+    console.error('[Snapshot] Failed to load from DB:', e.message);
+  }
+}
+
+// Fetch all sport keys, store results in DB and memory
+async function fetchAndStoreFixtures() {
+  console.log('[DailyJob] Fetching fixtures+odds from all sport keys...');
+  const all = [];
+  let creditsLeft = '?';
+  for (const sportKey of SOCCER_SPORT_KEYS) {
     try {
       const resp = await axios.get(`${ODDS_API_BASE}/sports/${sportKey}/odds`, {
         params: { apiKey: ODDS_API_KEY, regions: 'eu', markets: 'h2h', oddsFormat: 'decimal' }
       });
       const events = Array.isArray(resp.data) ? resp.data : [];
-      eventsCache[sportKey] = { time: now, events };
       all.push(...events);
       const rem = resp.headers['x-requests-remaining'];
-      if (events.length > 0) console.log(`[OddsAPI] ${sportKey}: ${events.length} events. Credits left: ${rem}`);
+      if (rem) creditsLeft = rem;
+      if (events.length > 0) console.log(`[DailyJob] ${sportKey}: ${events.length} events. Credits left: ${rem}`);
     } catch (e) {
-      console.error(`[OddsAPI] error [${sportKey}]:`, e.message);
-      if (cached) all.push(...cached.events);
+      console.error(`[DailyJob] Error [${sportKey}]:`, e.message);
     }
   }
-  // Only future events
-  const future = new Date();
-  return all.filter(e => new Date(e.commence_time) > future);
+
+  const fetchedAt = moment().tz(TIMEZONE).format('DD MMM YYYY, HH:mm z');
+  const stored = { events: all, fetchedAt, creditsLeft };
+  await db.set('snapshot:fixtures', stored);
+  fixtureSnapshot = all;
+  snapshotMeta = { fetchedAt, creditsLeft };
+  console.log(`[DailyJob] Snapshot stored: ${all.length} total events. Credits remaining: ${creditsLeft}`);
 }
 
-// Find a single event by its Odds API UUID
+// Read a single event from the in-memory snapshot (no API call)
 async function getEventById(id) {
-  for (const cached of Object.values(eventsCache)) {
-    const found = cached.events.find(e => e.id === id);
-    if (found) return found;
-  }
-  // Cache miss — refresh and retry once
-  await getAllUpcomingFixtures();
-  for (const cached of Object.values(eventsCache)) {
-    const found = cached.events.find(e => e.id === id);
-    if (found) return found;
-  }
-  return null;
+  return fixtureSnapshot.find(e => e.id === id) || null;
 }
+
+// ── DAILY SCHEDULER ───────────────────────────────────────────────────────────
+// Runs at 11 PM IST: settle finished matches, then fetch fresh fixtures+odds.
+// Checks every minute; skips if already ran today.
+
+async function runDailyJob() {
+  console.log('[DailyJob] Starting — settling bets, then fetching fixtures...');
+  try { await settlePendingBets(); } catch (e) { console.error('[DailyJob] Settlement error:', e.message); }
+  try { await fetchAndStoreFixtures(); } catch (e) { console.error('[DailyJob] Fetch error:', e.message); }
+  const today = moment().tz(TIMEZONE).format('YYYY-MM-DD');
+  await db.set('dailyJob:lastRun', today);
+  console.log('[DailyJob] Done for', today);
+}
+
+setInterval(async () => {
+  try {
+    const now = moment().tz(TIMEZONE);
+    if (now.hour() !== 23) return;                                  // only run during 11 PM IST hour
+    const today = now.format('YYYY-MM-DD');
+    const lastRun = await db.get('dailyJob:lastRun');
+    if (lastRun === today) return;                                   // already ran today
+    await runDailyJob();
+  } catch (e) {
+    console.error('[Scheduler] Error:', e.message);
+  }
+}, 60 * 1000);
 
 // Extract h2h odds from an event → [{ value:'Home'|'Draw'|'Away', odd:'1.90' }]
 function extractOdds(event) {
@@ -216,15 +250,8 @@ async function settlePendingBets() {
   return summary;
 }
 
-// Auto-settle every 60 minutes (conserves Odds API credits)
-setInterval(async () => {
-  try {
-    const s = await settlePendingBets();
-    if (s.settled > 0) console.log(`Auto-settlement: settled ${s.settled} bets`);
-  } catch (e) {
-    console.error('Auto-settlement error:', e.message);
-  }
-}, 60 * 60 * 1000);
+// Settlement is triggered exclusively by the daily job at 11 PM IST.
+// No auto-polling — every API call is accounted for.
 
 /* ---------------- HTML HELPERS ---------------- */
 
@@ -270,10 +297,13 @@ function htmlFooter(active) {
 
 /* ---------------- ROUTES ---------------- */
 
-// HOME / DASHBOARD – upcoming matches from The Odds API, grouped by league
+// HOME / DASHBOARD – reads from in-memory snapshot only, no API calls
 app.get('/', async (req, res) => {
   try {
-    const events = await getAllUpcomingFixtures();
+    const now = new Date();
+    const cutoff = 10 * 60 * 1000; // 10 min in ms
+    // Show events that haven't kicked off yet (betting still open or about to close)
+    const events = fixtureSnapshot.filter(ev => new Date(ev.commence_time) > now);
 
     const byLeague = {};
     for (const ev of events) {
@@ -282,10 +312,15 @@ app.get('/', async (req, res) => {
       byLeague[title].push(ev);
     }
 
+    const fetchInfo = snapshotMeta
+      ? `<p style="font-size:11px;color:#6b7280;margin-top:0;">Fixtures last updated: ${snapshotMeta.fetchedAt} • Next update: tonight at 11 PM IST</p>`
+      : `<p style="font-size:11px;color:#f59e0b;">Fixtures not yet loaded — first update runs tonight at 11 PM IST.</p>`;
+
     let html = htmlHeader('No Betting Zone - Home');
     html += `
       <div class="title">No Betting Zone</div>
       <p style="font-size:14px;color:#9ca3af;">Points-based football prediction game. No real money.</p>
+      ${fetchInfo}
 
       <p>Enter your name to track your predictions:</p>
       <form method="GET" action="/me" style="margin-bottom:16px;">
@@ -298,20 +333,31 @@ app.get('/', async (req, res) => {
 
     const leagueNames = Object.keys(byLeague).sort();
     if (!leagueNames.length) {
-      html += `<p style="color:#9ca3af;">No upcoming fixtures available. Check back later.</p>`;
+      html += `<p style="color:#9ca3af;">No upcoming fixtures in today's snapshot. Check back after 11 PM IST.</p>`;
     } else {
       for (const leagueName of leagueNames) {
         html += `<h4 style="margin-top:12px;font-size:14px;">${leagueName}</h4>`;
         const list = byLeague[leagueName].slice(0, 10);
         for (const ev of list) {
-          const date = moment(ev.commence_time).tz(TIMEZONE).format('DD MMM, HH:mm');
+          const kickoff = new Date(ev.commence_time);
+          const minsLeft = Math.round((kickoff - now) / 60000);
+          const bettingOpen = kickoff - now > cutoff;
+          const dateStr = moment(ev.commence_time).tz(TIMEZONE).format('DD MMM, HH:mm');
+          const badge = bettingOpen
+            ? (minsLeft < 60 ? `<span style="font-size:11px;color:#f59e0b;">Closes in ${minsLeft} min</span>` : '')
+            : `<span style="font-size:11px;color:#6b7280;">Betting closed</span>`;
           html += `
             <div class="card">
               <div style="display:flex;justify-content:space-between;align-items:flex-start;">
                 <div style="font-size:14px;">${ev.home_team} vs ${ev.away_team}</div>
-                <div style="font-size:12px;color:#9ca3af;white-space:nowrap;margin-left:8px;">${date}</div>
+                <div style="font-size:12px;color:#9ca3af;white-space:nowrap;margin-left:8px;">${dateStr}</div>
               </div>
-              <a href="/match?id=${ev.id}" style="font-size:13px;margin-top:6px;display:inline-block;">View & predict →</a>
+              <div style="margin-top:4px;display:flex;align-items:center;gap:10px;">
+                ${bettingOpen
+                  ? `<a href="/match?id=${ev.id}" style="font-size:13px;">View & predict →</a>`
+                  : `<span style="font-size:13px;color:#6b7280;">View</span>`}
+                ${badge}
+              </div>
             </div>
           `;
         }
@@ -322,7 +368,7 @@ app.get('/', async (req, res) => {
     res.send(html);
   } catch (e) {
     console.error(e);
-    res.status(500).send('Error loading fixtures: ' + e.message);
+    res.status(500).send('Error: ' + e.message);
   }
 });
 
@@ -446,9 +492,12 @@ app.post('/bet', async (req, res) => {
   const event = await getEventById(eventId);
   if (!event) return res.status(400).send('Match not found');
 
-  // Betting window: event must be in the future
-  if (new Date(event.commence_time) <= new Date()) {
-    return res.send('Betting closed — this match has already started.');
+  // Betting closes 10 minutes before kick-off
+  const kickoff = new Date(event.commence_time);
+  const tenMinsBefore = new Date(kickoff.getTime() - 10 * 60 * 1000);
+  if (new Date() >= tenMinsBefore) {
+    const timeStr = moment(kickoff).tz(TIMEZONE).format('DD MMM, HH:mm');
+    return res.send(`Betting closed — predictions locked 10 minutes before kick-off (${timeStr} IST).`);
   }
 
   // One prediction per user per event
@@ -599,26 +648,38 @@ app.get('/summary', async (req, res) => {
   res.send(html);
 });
 
-// MANUAL SETTLE – trigger settlement and show summary
+// SCHEDULE STATUS – shows when the daily job last ran and next run time
 app.get('/settle', async (req, res) => {
-  try {
-    const summary = await settlePendingBets();
-    let html = htmlHeader('Settlement - No Betting Zone');
-    html += `
-      <h2>Settlement</h2>
-      <div class="card">
-        <div>Bets settled: <strong>${summary.settled}</strong></div>
-        ${summary.errors.length ? `<div style="color:#ef4444;font-size:12px;margin-top:4px;">${summary.errors.join('<br>')}</div>` : ''}
-        ${summary.settled === 0 && !summary.errors.length ? `<div style="font-size:12px;color:#9ca3af;margin-top:4px;">No pending bets matched any finished fixtures.</div>` : ''}
-      </div>
-      <p><a href="/">Back to home</a> • <a href="/leaderboard">View leaderboard</a></p>
-    `;
-    html += htmlFooter('home');
-    res.send(html);
-  } catch (e) {
-    console.error(e);
-    res.status(500).send('Settlement error');
-  }
+  const lastRun = await db.get('dailyJob:lastRun') || 'Never';
+  const allBets = await getBets();
+  const pending = allBets.filter(b => b.status === 'PENDING').length;
+  const won = allBets.filter(b => b.status === 'WON').length;
+  const lost = allBets.filter(b => b.status === 'LOST').length;
+
+  let html = htmlHeader('Schedule - No Betting Zone');
+  html += `
+    <h2>Daily Schedule</h2>
+    <div class="card">
+      <div style="font-size:13px;color:#9ca3af;margin-bottom:8px;">Every night at 11:00 PM IST the app:</div>
+      <ol style="font-size:13px;margin:0;padding-left:18px;line-height:2;">
+        <li>Settles results for finished matches</li>
+        <li>Fetches fresh fixtures &amp; odds for the next days</li>
+      </ol>
+    </div>
+    <div class="card">
+      <div style="font-size:13px;">Last job ran: <strong>${lastRun}</strong></div>
+      <div style="font-size:13px;margin-top:4px;">Fixture snapshot: <strong>${snapshotMeta ? snapshotMeta.fetchedAt : 'Not yet fetched'}</strong></div>
+      ${snapshotMeta ? `<div style="font-size:12px;color:#6b7280;margin-top:2px;">Credits left after last fetch: ${snapshotMeta.creditsLeft}</div>` : ''}
+    </div>
+    <div class="card">
+      <div style="font-size:13px;">Pending bets: <strong>${pending}</strong></div>
+      <div style="font-size:13px;margin-top:4px;">Settled — Won: <strong style="color:#22c55e;">${won}</strong> / Lost: <strong style="color:#ef4444;">${lost}</strong></div>
+    </div>
+    <p style="font-size:12px;color:#6b7280;">No API calls are made when you use the app — all data is from the nightly snapshot.</p>
+    <p><a href="/">Back to home</a> • <a href="/leaderboard">View leaderboard</a></p>
+  `;
+  html += htmlFooter('settle');
+  res.send(html);
 });
 
 // LEADERBOARD
@@ -695,7 +756,9 @@ app.post('/forum', async (req, res) => {
   res.redirect('/forum');
 });
 
-// START SERVER
-app.listen(PORT, () => {
-  console.log(`No Betting Zone server running on port ${PORT}`);
+// START SERVER — load persisted snapshot into memory before accepting requests
+loadFixturesFromDB().then(() => {
+  app.listen(PORT, () => {
+    console.log(`No Betting Zone server running on port ${PORT}`);
+  });
 });
