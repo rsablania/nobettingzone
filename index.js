@@ -680,9 +680,18 @@ app.get('/', requireAuth, async (req, res) => {
       byLeague[title].push(ev);
     }
 
+    const nextOddsUpdate = (() => {
+      const n = moment().tz(TIMEZONE);
+      const next = n.clone().startOf('hour');
+      if (next.hour() % 2 !== 0) next.add(1, 'hour');
+      else if (n.minute() > 0) next.add(2, 'hours');
+      // round to next even hour
+      if (next.hour() % 2 !== 0) next.add(1, 'hour');
+      return next.format('h:mm A z');
+    })();
     const fetchInfo = snapshotMeta
-      ? `<p style="font-size:11px;color:#6b7280;margin-top:0;">Fixtures last updated: ${snapshotMeta.fetchedAt} • Next update: tonight at 11 PM IST</p>`
-      : `<p style="font-size:11px;color:#f59e0b;">Fixtures not yet loaded — first update runs tonight at 11 PM IST.</p>`;
+      ? `<p style="font-size:11px;color:#6b7280;margin-top:0;">Fixtures last updated: ${snapshotMeta.fetchedAt} • Next update: ${nextOddsUpdate}</p>`
+      : `<p style="font-size:11px;color:#f59e0b;">Fixtures not yet loaded — next update at ${nextOddsUpdate}.</p>`;
 
     const sessionUserId = req.session.userId;
     const userGreeting = sessionUserId
