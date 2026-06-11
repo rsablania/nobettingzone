@@ -1353,7 +1353,7 @@ app.get('/rules', requireAuth, (req, res) => {
         <li>Each match offers three outcomes — <strong style="color:#e5e7eb;">Home win, Draw, Away win</strong> (1X2 format).</li>
         <li>Pick one outcome and choose a stake: <strong style="color:#a78bfa;">20 / 40 / 60 / 80 / 100 points</strong>.</li>
         <li>Betting closes <strong style="color:#e5e7eb;">10 minutes before kick-off</strong>. No changes after that.</li>
-        <li>You can stake up to <strong style="color:#e5e7eb;">100 points per match</strong> in multiple tranches — e.g. 40 pts now, then 30 pts later. Each tranche locks in the odds at the time it is placed.</li>
+        <li>You can stake up to <strong style="color:#e5e7eb;">100 points per match</strong> in multiple tranches — e.g. 40 pts now, then 60 pts later. Each tranche must be a multiple of 20 pts (20 / 40 / 60 / 80 / 100) and locks in the odds at the time it is placed.</li>
         <li>All tranches on a match must be on the <strong style="color:#e5e7eb;">same outcome</strong>. Betting closes 10 minutes before kick-off — no new tranches after that.</li>
       </ul>
     </div>
@@ -1639,6 +1639,19 @@ app.get('/admin', async (req, res) => {
           </form>
           <p style="font-size:11px;color:#6b7280;margin-top:6px;">All match breakdowns + current leaderboard → gletterdash@gmail.com</p>`;
       })()}
+
+      <hr style="border-color:#1f2937;margin:16px 0;">
+      <h3 style="font-size:14px;color:#9ca3af;">Test Fixture</h3>
+      ${fixtureSnapshot.some(e => e.id === 'test-fixture-001')
+        ? `<p style="font-size:13px;color:#22c55e;margin-bottom:8px;">✓ Test fixture is live on the home page.</p>
+           <form method="POST" action="/admin/remove-test-fixture">
+             <button type="submit" style="background:#7f1d1d;border-color:#7f1d1d;">Remove test fixture</button>
+           </form>`
+        : `<p style="font-size:13px;color:#9ca3af;margin-bottom:8px;">Inject a dummy "Test Tournament" match (48 hrs from now) to verify betting rules.</p>
+           <form method="POST" action="/admin/add-test-fixture">
+             <button type="submit" style="background:#374151;border-color:#374151;">Add test fixture</button>
+           </form>`
+      }
 
       <p style="margin-top:24px;font-size:12px;color:#6b7280;">🔒 Admin panel locks automatically on next visit.</p>
     `;
