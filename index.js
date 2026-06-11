@@ -1640,19 +1640,6 @@ app.get('/admin', async (req, res) => {
           <p style="font-size:11px;color:#6b7280;margin-top:6px;">All match breakdowns + current leaderboard → gletterdash@gmail.com</p>`;
       })()}
 
-      <hr style="border-color:#1f2937;margin:16px 0;">
-      <h3 style="font-size:14px;color:#9ca3af;">Test Fixture</h3>
-      ${fixtureSnapshot.some(e => e.id === 'test-fixture-001')
-        ? `<p style="font-size:13px;color:#22c55e;margin-bottom:8px;">✓ Test fixture is live on the home page.</p>
-           <form method="POST" action="/admin/remove-test-fixture">
-             <button type="submit" style="background:#7f1d1d;border-color:#7f1d1d;">Remove test fixture</button>
-           </form>`
-        : `<p style="font-size:13px;color:#9ca3af;margin-bottom:8px;">Inject a dummy "Test Tournament" match (48 hrs from now) to verify betting rules.</p>
-           <form method="POST" action="/admin/add-test-fixture">
-             <button type="submit" style="background:#374151;border-color:#374151;">Add test fixture</button>
-           </form>`
-      }
-
       <p style="margin-top:24px;font-size:12px;color:#6b7280;">🔒 Admin panel locks automatically on next visit.</p>
     `;
   }
