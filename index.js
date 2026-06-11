@@ -102,8 +102,30 @@ async function fetchAndStoreFixtures() {
   console.log(`[DailyJob] Snapshot stored: ${all.length} total events. Credits remaining: ${creditsLeft}`);
 }
 
+// Dummy event definition (shared between home page and match/bet routes)
+const DUMMY_EVENT = {
+  id: 'dummy-match-ab',
+  sport_title: 'Dummy Tournament',
+  sport_key: 'dummy',
+  commence_time: new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString(),
+  home_team: 'Team A',
+  away_team: 'Team B',
+  bookmakers: [{
+    key: 'dummy',
+    markets: [{
+      key: 'h2h',
+      outcomes: [
+        { name: 'Team A', price: 2.10 },
+        { name: 'Draw',   price: 3.40 },
+        { name: 'Team B', price: 3.20 },
+      ]
+    }]
+  }]
+};
+
 // Read a single event from the in-memory snapshot (no API call)
 async function getEventById(id) {
+  if (id === 'dummy-match-ab') return DUMMY_EVENT;
   return fixtureSnapshot.find(e => e.id === id) || null;
 }
 
@@ -495,28 +517,7 @@ app.get('/', async (req, res) => {
     // Show events that haven't kicked off yet (betting still open or about to close)
     const events = fixtureSnapshot.filter(ev => new Date(ev.commence_time) > now);
 
-    // Dummy tournament — always shown at the top for testing
-    const dummyKickoff = new Date(now.getTime() + 3 * 60 * 60 * 1000); // 3 hours from now
-    const dummyEvent = {
-      id: 'dummy-match-ab',
-      sport_title: 'Dummy Tournament',
-      commence_time: dummyKickoff.toISOString(),
-      home_team: 'Team A',
-      away_team: 'Team B',
-      bookmakers: [{
-        key: 'dummy',
-        markets: [{
-          key: 'h2h',
-          outcomes: [
-            { name: 'Team A', price: 2.10 },
-            { name: 'Draw',   price: 3.40 },
-            { name: 'Team B', price: 3.20 },
-          ]
-        }]
-      }]
-    };
-
-    const byLeague = { 'Dummy Tournament': [dummyEvent] };
+    const byLeague = { 'Dummy Tournament': [DUMMY_EVENT] };
     for (const ev of events) {
       const title = ev.sport_title || 'Unknown League';
       if (!byLeague[title]) byLeague[title] = [];
