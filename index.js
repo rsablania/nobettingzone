@@ -733,6 +733,15 @@ app.get('/', requireAuth, async (req, res) => {
       ? `<p style="font-size:13px;margin-bottom:12px;">👤 <strong>${sessionUserId}</strong> — <a href="/summary">My Stats</a> · <a href="/logout">Log out</a></p>`
       : `<p style="font-size:13px;margin-bottom:12px;"><a href="/login">Log in</a> or <a href="/register">Register</a> to make predictions</p>`;
 
+    // Build a map of fixtureId → total staked by this user for home page badges
+    const userBetMap = {};
+    if (sessionUserId) {
+      const allUserBets = (await getBets()).filter(b => b.user === sessionUserId);
+      for (const b of allUserBets) {
+        userBetMap[b.fixtureId] = (userBetMap[b.fixtureId] || 0) + b.stake;
+      }
+    }
+
     let html = htmlHeader('No Betting Zone - Home');
     html += `
       <div class="title">No Betting Zone</div>
@@ -815,9 +824,14 @@ app.get('/', requireAuth, async (req, res) => {
             </summary>
             <div class="bet-panel">
               ${oddsHtml || '<p style="font-size:12px;color:#6b7280;margin:0 0 8px;">Odds not yet available.</p>'}
-              ${bettingOpen
-                ? `<a href="/match?id=${ev.id}" style="display:inline-block;margin-top:6px;font-size:13px;padding:7px 14px;background:#7c3aed;color:#fff;border-radius:8px;text-decoration:none;">Make prediction →</a>`
-                : `<p style="font-size:12px;color:#6b7280;margin:6px 0 0;">Betting closed for this match.</p>`}
+              ${(() => {
+                const staked = userBetMap[ev.id] || 0;
+                const remaining = 100 - staked;
+                if (!bettingOpen) return `<p style="font-size:12px;color:#6b7280;margin:6px 0 0;">Betting closed for this match.</p>`;
+                if (staked === 0) return `<a href="/match?id=${ev.id}" style="display:inline-block;margin-top:6px;font-size:13px;padding:7px 14px;background:#7c3aed;color:#fff;border-radius:8px;text-decoration:none;">Make prediction →</a>`;
+                if (remaining > 0) return `<a href="/match?id=${ev.id}" style="display:inline-block;margin-top:6px;font-size:13px;padding:7px 14px;background:#92400e;color:#fbbf24;border-radius:8px;text-decoration:none;">✏️ ${staked}/100 pts staked — add more →</a>`;
+                return `<a href="/match?id=${ev.id}" style="display:inline-block;margin-top:6px;font-size:13px;padding:7px 14px;background:#14532d;color:#22c55e;border-radius:8px;text-decoration:none;">✓ Fully staked (100 pts)</a>`;
+              })()}
             </div>
           </details>`;
         }
@@ -899,7 +913,10 @@ app.get('/match', requireAuth, async (req, res) => {
     // Fetch existing bets for this fixture
     const allBets = await getBets();
     const fixtureBets = allBets.filter(b => b.fixtureId === eventId);
-    const myBet = fixtureBets.find(b => b.user === req.session.userId);
+    const myBets = fixtureBets.filter(b => b.user === req.session.userId);
+    const myTotalStaked = myBets.reduce((s, b) => s + b.stake, 0);
+    const myRemaining = 100 - myTotalStaked;
+    const mySelection = myBets.length > 0 ? myBets[0].selection : null;
 
     const labelMap = { Home: `${home} wins`, Draw: 'Draw', Away: `${away} wins` };
 
@@ -914,54 +931,72 @@ app.get('/match', requireAuth, async (req, res) => {
     const kickoffTime = new Date(event.commence_time);
     const bettingOpen = new Date() < new Date(kickoffTime.getTime() - 10 * 60 * 1000);
 
-    if (myBet && !bettingOpen) {
-      // Betting closed — show locked pick, no editing
-      const selLabel = labelMap[myBet.selection] || myBet.selection;
+    // Show existing tranches if any
+    if (myBets.length > 0) {
+      const tranchemsLabel = myBets.length === 1 ? '1 tranche' : `${myBets.length} tranches`;
       html += `
-        <div style="background:#111827;border:1px solid #22c55e;border-radius:10px;padding:14px 16px;margin-bottom:16px;">
-          <div style="font-size:12px;color:#22c55e;margin-bottom:4px;">✓ Your prediction (locked)</div>
-          <div style="font-size:16px;font-weight:700;">${selLabel}</div>
-          <div style="font-size:13px;color:#9ca3af;margin-top:4px;">@ ${myBet.lockedOdds} &nbsp;·&nbsp; Stake: ${myBet.stake} pts</div>
+        <div style="background:#111827;border:1px solid ${myRemaining === 0 || !bettingOpen ? '#22c55e' : '#f59e0b'};border-radius:10px;padding:14px 16px;margin-bottom:14px;">
+          <div style="font-size:12px;color:${myRemaining === 0 || !bettingOpen ? '#22c55e' : '#fbbf24'};margin-bottom:8px;">
+            ${myRemaining === 0 || !bettingOpen ? '✓ Your prediction (locked)' : `✏️ Your prediction — ${myRemaining} pts remaining`}
+          </div>
+          <div style="font-size:14px;font-weight:700;margin-bottom:8px;">${labelMap[mySelection] || mySelection}</div>
+          <table style="width:100%;border-collapse:collapse;font-size:12px;">
+            <thead><tr style="color:#6b7280;font-size:11px;">
+              <th style="text-align:left;padding:3px 0;">Tranche</th>
+              <th style="text-align:right;padding:3px 4px;">Stake</th>
+              <th style="text-align:right;padding:3px 0;">Odds locked</th>
+            </tr></thead>
+            <tbody>
+              ${myBets.map((b, i) => `
+                <tr style="border-top:1px solid #1f2937;">
+                  <td style="padding:4px 0;color:#9ca3af;">#${i + 1}</td>
+                  <td style="padding:4px 4px;text-align:right;color:#a78bfa;">${b.stake} pts</td>
+                  <td style="padding:4px 0;text-align:right;color:#22c55e;">${b.lockedOdds}x</td>
+                </tr>`).join('')}
+              <tr style="border-top:1px solid #374151;font-weight:700;">
+                <td style="padding:4px 0;font-size:11px;color:#9ca3af;">TOTAL</td>
+                <td style="padding:4px 4px;text-align:right;color:#a78bfa;">${myTotalStaked} pts</td>
+                <td></td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       `;
-    } else {
-      // Show form — new bet or modifiable existing bet
-      const isModify = !!myBet;
-      if (isModify) {
-        html += `
-          <div style="background:#111827;border:1px solid #f59e0b;border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#fbbf24;">
-            ✏️ You already picked <strong>${labelMap[myBet.selection] || myBet.selection}</strong> @ ${myBet.lockedOdds} (${myBet.stake} pts) — change it below until 10 min before kick-off.
-          </div>
-        `;
-      }
+    }
+
+    // Show form if betting open and stake remaining
+    if (bettingOpen && myRemaining > 0) {
+      const availableStakes = [20, 40, 60, 80, 100].filter(s => s <= myRemaining);
+      const defaultStake = availableStakes[availableStakes.length - 1];
       html += `
         <form method="POST" action="/bet">
           <input type="hidden" name="eventId" value="${eventId}">
           <input type="hidden" name="leagueName" value="${leagueName}">
-          <p style="margin-bottom:6px;">${isModify ? 'Change your pick (1X2):' : 'Pick result (1X2):'}</p>
+          <p style="margin-bottom:6px;">${myBets.length > 0 ? 'Add another tranche (1X2):' : 'Pick result (1X2):'}</p>
       `;
       oddsToShow.forEach(o => {
-        const isSelected = isModify && myBet.selection === o.value;
+        const isLocked = mySelection !== null && o.value !== mySelection;
+        const isSelected = mySelection === o.value;
         html += `
-          <div style="margin-bottom:8px;">
-            <label style="display:flex;align-items:center;gap:10px;background:#111827;border:1px solid ${isSelected ? '#22c55e' : '#1f2937'};border-radius:8px;padding:10px 12px;cursor:pointer;">
-              <input type="radio" name="selection" value="${o.value}" ${isSelected ? 'checked' : ''} required style="accent-color:#22c55e;width:18px;height:18px;">
-              <span style="flex:1;font-size:14px;">${labelMap[o.value] || o.value}</span>
+          <div style="margin-bottom:8px;${isLocked ? 'opacity:0.35;pointer-events:none;' : ''}">
+            <label style="display:flex;align-items:center;gap:10px;background:#111827;border:1px solid ${isSelected ? '#22c55e' : '#1f2937'};border-radius:8px;padding:10px 12px;cursor:${isLocked ? 'not-allowed' : 'pointer'};">
+              <input type="radio" name="selection" value="${o.value}" ${isSelected || (!mySelection && o.value === oddsToShow[0].value) ? '' : ''} ${isSelected ? 'checked' : ''} ${isLocked ? 'disabled' : ''} required style="accent-color:#22c55e;width:18px;height:18px;">
+              <span style="flex:1;font-size:14px;">${labelMap[o.value] || o.value}${isLocked ? ' <span style="font-size:11px;color:#6b7280;">(locked out)</span>' : ''}</span>
               <span style="font-size:13px;font-weight:bold;color:#22c55e;">${o.odd}</span>
             </label>
           </div>
         `;
       });
-      const stakeOptions = [20, 40, 60, 80, 100];
       html += `
-          <p style="margin:14px 0 6px;">Choose stake:</p>
+          <p style="margin:14px 0 6px;">Choose stake <span style="font-size:11px;color:#9ca3af;">(max ${myRemaining} pts remaining)</span>:</p>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
-            ${stakeOptions.map(s => {
-              const isDefaultStake = isModify ? s === myBet.stake : s === 100;
+            ${[20, 40, 60, 80, 100].map(s => {
+              const disabled = s > myRemaining;
+              const isDefault = s === defaultStake;
               return `
-              <label style="flex:1;min-width:48px;text-align:center;cursor:pointer;" onclick="selectStake(this, ${s})">
-                <input type="radio" name="stake" value="${s}" ${isDefaultStake ? 'checked' : ''} required style="display:none;">
-                <span class="stake-btn" style="display:block;padding:8px 4px;border:1px solid ${isDefaultStake ? '#7c3aed' : '#374151'};border-radius:8px;font-size:14px;font-weight:600;background:${isDefaultStake ? '#4c1d95' : '#1f2937'};color:#fff;">${s}</span>
+              <label style="flex:1;min-width:48px;text-align:center;cursor:${disabled ? 'not-allowed' : 'pointer'};${disabled ? 'opacity:0.3;' : ''}" ${disabled ? '' : `onclick="selectStake(this, ${s})"`}>
+                <input type="radio" name="stake" value="${s}" ${isDefault ? 'checked' : ''} ${disabled ? 'disabled' : ''} required style="display:none;">
+                <span class="stake-btn" style="display:block;padding:8px 4px;border:1px solid ${isDefault ? '#7c3aed' : '#374151'};border-radius:8px;font-size:14px;font-weight:600;background:${isDefault ? '#4c1d95' : '#1f2937'};color:#fff;">${s}</span>
               </label>`;
             }).join('')}
           </div>
@@ -976,14 +1011,14 @@ app.get('/match', requireAuth, async (req, res) => {
               span.style.background = '#4c1d95';
             }
           </script>
-          <button type="submit" style="margin-top:4px;width:100%;">${isModify ? 'Update Prediction' : 'Place Bet'}</button>
+          <button type="submit" style="margin-top:4px;width:100%;">${myBets.length > 0 ? 'Add Tranche' : 'Place Bet'}</button>
         </form>
         <p style="margin-top:8px;font-size:11px;color:#6b7280;">${odds ? '📊 Live bookmaker odds' : '📊 Estimated odds'}</p>
 
         <!-- Confirmation overlay -->
         <div id="bet-confirm-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:999;align-items:center;justify-content:center;">
           <div style="background:#111827;border:1px solid #374151;border-radius:14px;padding:24px 20px;max-width:320px;width:90%;text-align:center;">
-            <div style="font-size:15px;font-weight:700;color:#e5e7eb;margin-bottom:6px;">${isModify ? 'Update your prediction' : 'Confirm your bet'}</div>
+            <div style="font-size:15px;font-weight:700;color:#e5e7eb;margin-bottom:6px;">${myBets.length > 0 ? 'Add tranche' : 'Confirm bet'}</div>
             <div style="font-size:13px;color:#9ca3af;margin-bottom:14px;">${home} vs ${away}</div>
             <div style="background:#1f2937;border-radius:8px;padding:12px;margin-bottom:16px;">
               <div style="font-size:13px;color:#9ca3af;">Pick</div>
@@ -1003,7 +1038,6 @@ app.get('/match', requireAuth, async (req, res) => {
             const overlay = document.getElementById('bet-confirm-overlay');
             const labelMap = { Home: '${home} wins', Draw: 'Draw', Away: '${away} wins' };
             let confirmed = false;
-
             form.addEventListener('submit', function(e) {
               if (confirmed) return;
               e.preventDefault();
@@ -1014,11 +1048,9 @@ app.get('/match', requireAuth, async (req, res) => {
               document.getElementById('confirm-stake').textContent = stk.value + ' pts';
               overlay.style.display = 'flex';
             });
-
             document.getElementById('bet-cancel-btn').addEventListener('click', function() {
               overlay.style.display = 'none';
             });
-
             document.getElementById('bet-confirm-btn').addEventListener('click', function() {
               confirmed = true;
               overlay.style.display = 'none';
@@ -1027,37 +1059,47 @@ app.get('/match', requireAuth, async (req, res) => {
           })();
         </script>
       `;
+    } else if (!bettingOpen && myBets.length === 0) {
+      html += `<p style="font-size:13px;color:#6b7280;">Betting closed for this match.</p>`;
     }
 
-    // Predictions so far table
+    // Predictions so far table — grouped by player
+    const byPlayer = {};
+    for (const b of fixtureBets) {
+      if (!byPlayer[b.user]) byPlayer[b.user] = { selection: b.selection, totalStake: 0, bets: [] };
+      byPlayer[b.user].totalStake += b.stake;
+      byPlayer[b.user].bets.push(b);
+    }
+    const playerEntries = Object.entries(byPlayer);
+    const poolTotal = fixtureBets.reduce((s, b) => s + b.stake, 0);
+
     html += `<hr style="border-color:#1f2937;margin:16px 0;">`;
-    if (fixtureBets.length === 0) {
+    if (playerEntries.length === 0) {
       html += `<p style="font-size:13px;color:#6b7280;">No predictions placed yet.</p>`;
     } else {
-      const totalStaked = fixtureBets.reduce((s, b) => s + b.stake, 0);
       html += `
         <p style="font-size:13px;color:#9ca3af;margin-bottom:8px;">
-          Predictions so far &nbsp;·&nbsp; <strong style="color:#e5e7eb;">${fixtureBets.length}</strong> player${fixtureBets.length !== 1 ? 's' : ''}
-          &nbsp;·&nbsp; Pool: <strong style="color:#e5e7eb;">${totalStaked} pts</strong>
+          Predictions so far &nbsp;·&nbsp; <strong style="color:#e5e7eb;">${playerEntries.length}</strong> player${playerEntries.length !== 1 ? 's' : ''}
+          &nbsp;·&nbsp; Pool: <strong style="color:#e5e7eb;">${poolTotal} pts</strong>
         </p>
         <table style="width:100%;border-collapse:collapse;font-size:13px;">
           <thead>
             <tr style="border-bottom:1px solid #1f2937;color:#6b7280;font-size:11px;text-transform:uppercase;">
               <th style="padding:6px 4px;text-align:left;">Player</th>
               <th style="padding:6px 4px;text-align:left;">Pick</th>
-              <th style="padding:6px 4px;text-align:right;">Stake</th>
-              <th style="padding:6px 4px;text-align:right;">Odds</th>
+              <th style="padding:6px 4px;text-align:right;">Total Stake</th>
+              <th style="padding:6px 4px;text-align:right;">Tranches</th>
             </tr>
           </thead>
           <tbody>
-            ${fixtureBets.map(b => {
-              const isMe = b.user === req.session.userId;
-              const selLabel = labelMap[b.selection] || b.selection;
+            ${playerEntries.map(([userId, data]) => {
+              const isMe = userId === req.session.userId;
+              const selLabel = labelMap[data.selection] || data.selection;
               return `<tr style="border-bottom:1px solid #1f2937;${isMe ? 'color:#22c55e;' : ''}">
-                <td style="padding:8px 4px;">${b.user}${isMe ? ' ★' : ''}</td>
+                <td style="padding:8px 4px;">${userId}${isMe ? ' ★' : ''}</td>
                 <td style="padding:8px 4px;">${selLabel}</td>
-                <td style="padding:8px 4px;text-align:right;">${b.stake}</td>
-                <td style="padding:8px 4px;text-align:right;">${b.lockedOdds}</td>
+                <td style="padding:8px 4px;text-align:right;">${data.totalStake}</td>
+                <td style="padding:8px 4px;text-align:right;">${data.bets.length}</td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -1074,7 +1116,7 @@ app.get('/match', requireAuth, async (req, res) => {
   }
 });
 
-// HANDLE BET – one prediction per user per event
+// HANDLE BET – tranche-based, up to 100 pts per user per fixture
 app.post('/bet', requireAuth, async (req, res) => {
   const { eventId, selection, leagueName } = req.body || {};
   if (!eventId || !selection) {
@@ -1096,9 +1138,25 @@ app.post('/bet', requireAuth, async (req, res) => {
 
   // Validate stake
   const stakeInput = parseInt(req.body.stake);
-  const stake = [20, 40, 60, 80, 100].includes(stakeInput) ? stakeInput : 100;
+  if (![20, 40, 60, 80, 100].includes(stakeInput)) {
+    return res.status(400).send('Invalid stake amount.');
+  }
+  const stake = stakeInput;
 
-  // Lock in odds from the current snapshot at time of placement/modification
+  // Enforce same selection as existing tranches
+  const bets = await getBets();
+  const existingTranches = bets.filter(b => b.user === user.userId && b.fixtureId === eventId);
+  if (existingTranches.length > 0 && existingTranches[0].selection !== selection) {
+    return res.status(400).send(`You must bet on the same outcome as your existing tranches (${existingTranches[0].selection}).`);
+  }
+
+  // Enforce 100-pt cap per fixture
+  const alreadyStaked = existingTranches.reduce((s, b) => s + b.stake, 0);
+  if (alreadyStaked + stake > 100) {
+    return res.status(400).send(`Only ${100 - alreadyStaked} pts remaining for this match.`);
+  }
+
+  // Lock in odds from the current snapshot at time of this tranche
   const odds = extractOdds(event);
   let lockedOdds = 2.0;
   if (odds) {
@@ -1106,41 +1164,27 @@ app.post('/bet', requireAuth, async (req, res) => {
     if (match) lockedOdds = parseFloat(match.odd) || 2.0;
   }
 
-  // Check for existing bet — update if found, add new if not
-  const bets = await getBets();
-  const existingIdx = bets.findIndex(b => b.user === user.userId && b.fixtureId === eventId);
-  let isModify = false;
+  const isFirstTranche = existingTranches.length === 0;
+  const bet = {
+    id: Date.now().toString(),
+    user: user.userId,
+    fixtureId: eventId,
+    sportKey: event.sport_key,
+    homeTeam: event.home_team,
+    awayTeam: event.away_team,
+    leagueName: leagueName || event.sport_title || 'Unknown League',
+    market: 'MATCH_RESULT',
+    selection,
+    stake,
+    lockedOdds,
+    status: 'PENDING',
+    netPoints: null,
+    result: null,
+  };
+  await addBet(bet);
 
-  if (existingIdx !== -1) {
-    // Update in place — preserve id and original fields, update pick/stake/odds
-    bets[existingIdx] = {
-      ...bets[existingIdx],
-      selection,
-      stake,
-      lockedOdds,
-      modifiedAt: new Date().toISOString(),
-    };
-    await updateBets(bets);
-    isModify = true;
-  } else {
-    const bet = {
-      id: Date.now().toString(),
-      user: user.userId,
-      fixtureId: eventId,
-      sportKey: event.sport_key,
-      homeTeam: event.home_team,
-      awayTeam: event.away_team,
-      leagueName: leagueName || event.sport_title || 'Unknown League',
-      market: 'MATCH_RESULT',
-      selection,
-      stake,
-      lockedOdds,
-      status: 'PENDING',
-      netPoints: null,
-      result: null,
-    };
-    await addBet(bet);
-  }
+  const totalNow = alreadyStaked + stake;
+  const remaining = 100 - totalNow;
 
   const selectionLabel = selection === 'Home' ? `${event.home_team} wins`
     : selection === 'Away' ? `${event.away_team} wins`
@@ -1149,25 +1193,30 @@ app.post('/bet', requireAuth, async (req, res) => {
   res.send(`
     <html><body style="background:#020617;color:#e5e7eb;font-family:system-ui;padding:20px;">
       <div style="max-width:400px;margin:0 auto;text-align:center;padding-top:40px;">
-        <div style="font-size:48px;margin-bottom:12px;">${isModify ? '✏️' : '✅'}</div>
-        <h2 style="font-size:22px;margin-bottom:6px;">${isModify ? 'Prediction Updated!' : 'Bet Placed!'}</h2>
+        <div style="font-size:48px;margin-bottom:12px;">${isFirstTranche ? '✅' : '➕'}</div>
+        <h2 style="font-size:22px;margin-bottom:6px;">${isFirstTranche ? 'Bet Placed!' : 'Tranche Added!'}</h2>
         <p style="font-size:15px;color:#9ca3af;margin-bottom:24px;">${event.home_team} vs ${event.away_team}</p>
         <div style="background:#111827;border:1px solid #1f2937;border-radius:12px;padding:20px;margin-bottom:24px;">
           <div style="font-size:13px;color:#9ca3af;margin-bottom:4px;">Your pick</div>
           <div style="font-size:22px;font-weight:700;color:#e5e7eb;margin-bottom:16px;">${selectionLabel}</div>
-          <div style="display:flex;justify-content:space-around;">
+          <div style="display:flex;justify-content:space-around;margin-bottom:12px;">
             <div>
-              <div style="font-size:13px;color:#9ca3af;">Stake</div>
+              <div style="font-size:13px;color:#9ca3af;">This tranche</div>
               <div style="font-size:20px;font-weight:700;color:#a78bfa;">${stake} pts</div>
             </div>
             <div>
-              <div style="font-size:13px;color:#9ca3af;">Odds</div>
+              <div style="font-size:13px;color:#9ca3af;">Odds locked</div>
               <div style="font-size:20px;font-weight:700;color:#22c55e;">${lockedOdds}x</div>
             </div>
           </div>
+          <div style="font-size:12px;color:#9ca3af;border-top:1px solid #374151;padding-top:10px;display:flex;justify-content:space-between;">
+            <span>Total staked on match</span>
+            <strong style="color:#e5e7eb;">${totalNow} / 100 pts</strong>
+          </div>
+          ${remaining > 0 ? `<div style="font-size:12px;color:#fbbf24;margin-top:4px;">${remaining} pts remaining — add another tranche from the match page.</div>` : `<div style="font-size:12px;color:#22c55e;margin-top:4px;">Fully staked on this match.</div>`}
         </div>
         <div style="display:flex;gap:12px;">
-          <a href="/" style="flex:1;padding:12px;background:#1f2937;color:#e5e7eb;border-radius:8px;text-decoration:none;font-size:15px;text-align:center;">Home</a>
+          <a href="/match?id=${eventId}" style="flex:1;padding:12px;background:#1f2937;color:#e5e7eb;border-radius:8px;text-decoration:none;font-size:15px;text-align:center;">Match</a>
           <a href="/summary" style="flex:1;padding:12px;background:#22c55e;color:#000;border-radius:8px;text-decoration:none;font-size:15px;font-weight:600;text-align:center;">My Bets</a>
         </div>
       </div>
@@ -1303,7 +1352,8 @@ app.get('/rules', requireAuth, (req, res) => {
         <li>Each match offers three outcomes — <strong style="color:#e5e7eb;">Home win, Draw, Away win</strong> (1X2 format).</li>
         <li>Pick one outcome and choose a stake: <strong style="color:#a78bfa;">20 / 40 / 60 / 80 / 100 points</strong>.</li>
         <li>Betting closes <strong style="color:#e5e7eb;">10 minutes before kick-off</strong>. No changes after that.</li>
-        <li>One prediction per user per match — you can change your pick and stake any time until <strong style="color:#e5e7eb;">10 minutes before kick-off</strong>. The odds at the time of your last change are locked in.</li>
+        <li>You can stake up to <strong style="color:#e5e7eb;">100 points per match</strong> in multiple tranches — e.g. 40 pts now, then 30 pts later. Each tranche locks in the odds at the time it is placed.</li>
+        <li>All tranches on a match must be on the <strong style="color:#e5e7eb;">same outcome</strong>. Betting closes 10 minutes before kick-off — no new tranches after that.</li>
       </ul>
     </div>
 
