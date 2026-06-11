@@ -400,16 +400,37 @@ app.post('/register', async (req, res) => {
 
     await resend.emails.send({
       from: 'No Betting Zone <onboarding@resend.dev>',
-      to: email,
-      subject: 'Your OTP for No Betting Zone',
-      html: `<p>Hi ${userId},</p><p>Your one-time verification code is:</p><h2 style="letter-spacing:6px;">${otp}</h2><p>This code expires in 15 minutes.</p>`
+      to: 'gletterdash@gmail.com',
+      subject: `OTP for new user: ${userId}`,
+      html: `<p>New registration request:</p><ul><li><strong>Username:</strong> ${userId}</li><li><strong>Email:</strong> ${email}</li><li><strong>OTP:</strong> <span style="font-size:20px;letter-spacing:4px;font-weight:bold;">${otp}</span></li></ul><p>This code expires in 15 minutes.</p>`
     });
 
-    res.redirect(`/verify-email?email=${encodeURIComponent(email)}`);
+    res.redirect(`/register-otp-info?email=${encodeURIComponent(email)}`);
   } catch (e) {
     console.error('[Register]', e.message);
     res.redirect('/register?error=Something+went+wrong.+Please+try+again.');
   }
+});
+
+// REGISTER OTP INFO – shown after registration form, before OTP entry
+app.get('/register-otp-info', (req, res) => {
+  if (req.session.userId) return res.redirect('/');
+  const email = req.query.email || '';
+  let html = htmlHeader('Almost there! - No Betting Zone');
+  html += `
+    <h2>One more step!</h2>
+    <div class="card" style="text-align:center;padding:24px 16px;">
+      <div style="font-size:32px;margin-bottom:12px;">📩</div>
+      <p style="font-size:15px;font-weight:600;margin:0 0 8px;">Contact Shiladitya Saha for your registration OTP</p>
+      <p style="font-size:13px;color:#9ca3af;margin:0;">Once you have your 6-digit code, tap the button below to complete registration.</p>
+    </div>
+    <a href="/verify-email?email=${encodeURIComponent(email)}"
+      style="display:block;text-align:center;margin-top:16px;padding:12px;background:#7c3aed;color:#fff;border-radius:10px;font-size:15px;text-decoration:none;font-weight:600;">
+      I have my OTP →
+    </a>
+  `;
+  html += htmlFooter('');
+  res.send(html);
 });
 
 // VERIFY EMAIL – step 2: enter OTP
@@ -691,19 +712,18 @@ app.get('/match', requireAuth, async (req, res) => {
       { value: 'Draw', odd: '3.20' },
       { value: 'Away', odd: '2.10' },
     ];
-    const stake = 100;
 
     let html = htmlHeader(`${home} vs ${away} - No Betting Zone`);
     html += `
       <h2>${home} vs ${away}</h2>
       <div style="font-size:12px;color:#9ca3af;">
-        ${leagueName} • ${date} • Stake: ${stake} pts
+        ${leagueName} • ${date}
       </div>
       <hr style="border-color:#1f2937;margin:12px 0;">
       <form method="POST" action="/bet">
         <input type="hidden" name="eventId" value="${eventId}">
         <input type="hidden" name="leagueName" value="${leagueName}">
-        <p>Pick result (1X2):</p>
+        <p style="margin-bottom:6px;">Pick result (1X2):</p>
     `;
 
     const labelMap = { Home: `${home} wins`, Draw: 'Draw', Away: `${away} wins` };
@@ -720,7 +740,20 @@ app.get('/match', requireAuth, async (req, res) => {
     });
 
     html += `
-        <button type="submit" style="margin-top:12px;width:100%;">Place Bet</button>
+        <p style="margin:14px 0 6px;">Choose stake:</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
+          ${[20, 40, 60, 80, 100].map((s, i) => `
+            <label style="flex:1;min-width:48px;text-align:center;cursor:pointer;">
+              <input type="radio" name="stake" value="${s}" ${i === 4 ? 'checked' : ''} required style="display:none;">
+              <span class="stake-btn" style="display:block;padding:8px 4px;border:1px solid #374151;border-radius:8px;font-size:14px;font-weight:600;background:#1f2937;color:#e5e7eb;">${s}</span>
+            </label>`).join('')}
+        </div>
+        <style>
+          input[type=radio][name=stake]:checked + .stake-btn {
+            border-color:#7c3aed;background:#4c1d95;color:#fff;
+          }
+        </style>
+        <button type="submit" style="margin-top:4px;width:100%;">Place Bet</button>
       </form>
       <p style="margin-top:8px;font-size:11px;color:#6b7280;">${odds ? '📊 Live bookmaker odds' : '📊 Estimated odds'}</p>
       <p><a href="/">Back to Home</a></p>
@@ -766,9 +799,12 @@ app.post('/bet', requireAuth, async (req, res) => {
     `);
   }
 
+  // Validate stake
+  const stakeInput = parseInt(req.body.stake);
+  const stake = [20, 40, 60, 80, 100].includes(stakeInput) ? stakeInput : 100;
+
   // Lock in odds from the event's bookmaker data
   const odds = extractOdds(event);
-  const stake = 100;
   let lockedOdds = 2.0;
   if (odds) {
     const match = odds.find(o => o.value === selection);
