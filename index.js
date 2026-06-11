@@ -1088,18 +1088,19 @@ app.get('/match', requireAuth, async (req, res) => {
               <th style="padding:6px 4px;text-align:left;">Player</th>
               <th style="padding:6px 4px;text-align:left;">Pick</th>
               <th style="padding:6px 4px;text-align:right;">Total Stake</th>
-              <th style="padding:6px 4px;text-align:right;">Tranches</th>
+              <th style="padding:6px 4px;text-align:right;">Avg Odds</th>
             </tr>
           </thead>
           <tbody>
             ${playerEntries.map(([userId, data]) => {
               const isMe = userId === req.session.userId;
               const selLabel = labelMap[data.selection] || data.selection;
+              const wavgOdds = (data.bets.reduce((s, b) => s + b.lockedOdds * b.stake, 0) / data.totalStake).toFixed(2);
               return `<tr style="border-bottom:1px solid #1f2937;${isMe ? 'color:#22c55e;' : ''}">
                 <td style="padding:8px 4px;">${userId}${isMe ? ' ★' : ''}</td>
                 <td style="padding:8px 4px;">${selLabel}</td>
                 <td style="padding:8px 4px;text-align:right;">${data.totalStake}</td>
-                <td style="padding:8px 4px;text-align:right;">${data.bets.length}</td>
+                <td style="padding:8px 4px;text-align:right;">${wavgOdds}x</td>
               </tr>`;
             }).join('')}
           </tbody>
