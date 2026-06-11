@@ -22,8 +22,8 @@ app.use(session({
   secret: process.env.SESSION_SECRET || 'dev-secret',
   resave: false,
   saveUninitialized: false,
-  rolling: true,                                    // renew cookie on every request
-  cookie: { maxAge: 365 * 24 * 60 * 60 * 1000 }    // 1 year
+  rolling: true,
+  cookie: { maxAge: 7 * 24 * 60 * 60 * 1000 }      // 7 days, renewed on each visit
 }));
 
 // All soccer sport keys on The Odds API free plan
