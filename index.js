@@ -524,32 +524,83 @@ app.get('/', async (req, res) => {
     if (!leagueNames.length) {
       html += `<p style="color:#9ca3af;">No upcoming fixtures in today's snapshot. Check back after 11 PM IST.</p>`;
     } else {
+      html += `<style>
+        details.tournament { border:1px solid #1f2937; border-radius:10px; margin-bottom:10px; overflow:hidden; }
+        details.tournament > summary {
+          cursor:pointer; padding:12px 16px; font-size:15px; font-weight:600;
+          background:#0f172a; list-style:none; display:flex; justify-content:space-between; align-items:center;
+          user-select:none;
+        }
+        details.tournament > summary::-webkit-details-marker { display:none; }
+        details.tournament > summary::after { content:'▸'; font-size:12px; color:#6b7280; transition:transform .2s; }
+        details.tournament[open] > summary::after { content:'▾'; }
+        details.tournament > summary:hover { background:#1e293b; }
+
+        details.match-item { border-top:1px solid #1f2937; }
+        details.match-item > summary {
+          cursor:pointer; padding:10px 16px; list-style:none; display:flex;
+          justify-content:space-between; align-items:center; gap:8px;
+          background:#020617; user-select:none;
+        }
+        details.match-item > summary::-webkit-details-marker { display:none; }
+        details.match-item > summary:hover { background:#0f172a; }
+        details.match-item > summary .match-name { font-size:14px; }
+        details.match-item > summary .match-meta { font-size:11px; color:#6b7280; white-space:nowrap; }
+
+        .bet-panel { padding:12px 16px; background:#0a0f1e; border-top:1px solid #1f2937; }
+        .odds-row { display:flex; gap:8px; margin:8px 0; flex-wrap:wrap; }
+        .odds-btn {
+          flex:1; min-width:80px; padding:8px 6px; border-radius:8px; border:1px solid #374151;
+          background:#1f2937; color:#e5e7eb; font-size:13px; text-align:center;
+        }
+        .odds-btn .label { font-size:11px; color:#9ca3af; }
+        .odds-btn .value { font-weight:700; font-size:15px; margin-top:2px; }
+      </style>`;
+
       for (const leagueName of leagueNames) {
-        html += `<h4 style="margin-top:12px;font-size:14px;">${leagueName}</h4>`;
-        const list = byLeague[leagueName].slice(0, 10);
+        const list = byLeague[leagueName].slice(0, 15);
+        html += `<details class="tournament">
+          <summary>${leagueName} <span style="font-size:12px;font-weight:400;color:#6b7280;">${list.length} match${list.length !== 1 ? 'es' : ''}</span></summary>`;
+
         for (const ev of list) {
           const kickoff = new Date(ev.commence_time);
           const minsLeft = Math.round((kickoff - now) / 60000);
           const bettingOpen = kickoff - now > cutoff;
           const dateStr = moment(ev.commence_time).tz(TIMEZONE).format('DD MMM, HH:mm');
-          const badge = bettingOpen
-            ? (minsLeft < 60 ? `<span style="font-size:11px;color:#f59e0b;">Closes in ${minsLeft} min</span>` : '')
-            : `<span style="font-size:11px;color:#6b7280;">Betting closed</span>`;
-          html += `
-            <div class="card">
-              <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-                <div style="font-size:14px;">${ev.home_team} vs ${ev.away_team}</div>
-                <div style="font-size:12px;color:#9ca3af;white-space:nowrap;margin-left:8px;">${dateStr}</div>
-              </div>
-              <div style="margin-top:4px;display:flex;align-items:center;gap:10px;">
-                ${bettingOpen
-                  ? `<a href="/match?id=${ev.id}" style="font-size:13px;">View & predict →</a>`
-                  : `<span style="font-size:13px;color:#6b7280;">View</span>`}
-                ${badge}
-              </div>
+          const badge = !bettingOpen
+            ? `<span style="font-size:11px;color:#6b7280;border:1px solid #374151;border-radius:4px;padding:1px 5px;">Closed</span>`
+            : minsLeft < 60
+              ? `<span style="font-size:11px;color:#f59e0b;border:1px solid #f59e0b;border-radius:4px;padding:1px 5px;">Closes ${minsLeft}m</span>`
+              : '';
+
+          // Extract 1X2 odds if available
+          const h2h = (ev.bookmakers?.[0]?.markets || []).find(m => m.key === 'h2h');
+          let oddsHtml = '';
+          if (h2h && h2h.outcomes) {
+            const home = h2h.outcomes.find(o => o.name === ev.home_team);
+            const away = h2h.outcomes.find(o => o.name === ev.away_team);
+            const draw = h2h.outcomes.find(o => o.name === 'Draw');
+            oddsHtml = `<div class="odds-row">
+              <div class="odds-btn"><div class="label">Home</div><div class="value">${home ? home.price : '—'}</div></div>
+              ${draw ? `<div class="odds-btn"><div class="label">Draw</div><div class="value">${draw.price}</div></div>` : ''}
+              <div class="odds-btn"><div class="label">Away</div><div class="value">${away ? away.price : '—'}</div></div>
+            </div>`;
+          }
+
+          html += `<details class="match-item">
+            <summary>
+              <span class="match-name">${ev.home_team} vs ${ev.away_team}</span>
+              <span style="display:flex;align-items:center;gap:6px;">${badge}<span class="match-meta">${dateStr}</span></span>
+            </summary>
+            <div class="bet-panel">
+              ${oddsHtml || '<p style="font-size:12px;color:#6b7280;margin:0 0 8px;">Odds not yet available.</p>'}
+              ${bettingOpen
+                ? `<a href="/match?id=${ev.id}" style="display:inline-block;margin-top:6px;font-size:13px;padding:7px 14px;background:#7c3aed;color:#fff;border-radius:8px;text-decoration:none;">Make prediction →</a>`
+                : `<p style="font-size:12px;color:#6b7280;margin:6px 0 0;">Betting closed for this match.</p>`}
             </div>
-          `;
+          </details>`;
         }
+        html += `</details>`;
       }
     }
 
