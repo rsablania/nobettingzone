@@ -133,14 +133,14 @@ setInterval(async () => {
   }
 }, 60 * 1000);
 
-// Odds refresh every 3 hours (runs at :00 of hours 0,3,6,9,12,15,18,21 IST)
+// Odds refresh every 2 hours (runs at :00 of hours 0,2,4,6,8,10,12,14,16,18,20,22 IST)
 // Fetches latest fixtures+odds from API and updates the in-memory snapshot.
 setInterval(async () => {
   try {
     const now = moment().tz(TIMEZONE);
     const h = now.hour();
     if (h === 23) return;                         // 11 PM handled by full daily job
-    if (h % 3 !== 0 || now.minute() !== 0) return;
+    if (h % 2 !== 0 || now.minute() !== 0) return;
     const key = `oddsRefresh:${now.format('YYYY-MM-DD-HH')}`;
     if (await db.get(key)) return;
     await db.set(key, true);
@@ -1252,7 +1252,7 @@ app.get('/rules', requireAuth, (req, res) => {
     <div class="card" style="margin-bottom:12px;">
       <div style="font-size:13px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">Settlement Timing</div>
       <ul style="margin:0;padding-left:18px;font-size:14px;line-height:1.8;color:#d1d5db;">
-        <li>Odds are refreshed automatically every <strong style="color:#e5e7eb;">3 hours</strong>. Results and settlement run once daily at <strong style="color:#e5e7eb;">11 PM IST</strong>.</li>
+        <li>Odds are refreshed automatically every <strong style="color:#e5e7eb;">2 hours</strong>. Results and settlement run once daily at <strong style="color:#e5e7eb;">11 PM IST</strong>.</li>
         <li>Bets are settled as soon as the result is confirmed by the data source.</li>
         <li>Settled results appear on the <a href="/results" style="color:#22c55e;">Results</a> page and your <a href="/summary" style="color:#22c55e;">My Stats</a> page.</li>
       </ul>
