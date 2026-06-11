@@ -446,6 +446,7 @@ function htmlFooter(active) {
       <a href="/" class="${active === 'home' ? 'active' : ''}">Home</a>
       <a href="/summary" class="${active === 'summary' ? 'active' : ''}">My Stats</a>
       <a href="/leaderboard" class="${active === 'leaders' ? 'active' : ''}">Leaders</a>
+      <a href="/rules" class="${active === 'rules' ? 'active' : ''}">Rules</a>
       <a href="/results" class="${active === 'results' ? 'active' : ''}">Results</a>
       <a href="/forum" class="${active === 'forum' ? 'active' : ''}">Forum</a>
       <a href="/admin" class="${active === 'admin' ? 'active' : ''}">Admin</a>
@@ -1188,6 +1189,76 @@ app.get('/summary', requireAuth, async (req, res) => {
   }
 
   html += htmlFooter('summary');
+  res.send(html);
+});
+
+// RULES – read-only explanation of results & settlement logic
+app.get('/rules', requireAuth, (req, res) => {
+  let html = htmlHeader('Rules - No Betting Zone');
+  html += `
+    <h2 style="margin-bottom:4px;">How It Works</h2>
+    <p style="color:#9ca3af;font-size:13px;margin-top:0;margin-bottom:20px;">Results logic &amp; settlement explained</p>
+
+    <!-- Predictions -->
+    <div class="card" style="margin-bottom:12px;">
+      <div style="font-size:13px;font-weight:700;color:#22c55e;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">Making a Prediction</div>
+      <ul style="margin:0;padding-left:18px;font-size:14px;line-height:1.8;color:#d1d5db;">
+        <li>Each match offers three outcomes — <strong style="color:#e5e7eb;">Home win, Draw, Away win</strong> (1X2 format).</li>
+        <li>Pick one outcome and choose a stake: <strong style="color:#a78bfa;">20 / 40 / 60 / 80 / 100 points</strong>.</li>
+        <li>Betting closes <strong style="color:#e5e7eb;">10 minutes before kick-off</strong>. No changes after that.</li>
+        <li>One prediction per user per match.</li>
+      </ul>
+    </div>
+
+    <!-- Group stage -->
+    <div class="card" style="margin-bottom:12px;">
+      <div style="font-size:13px;font-weight:700;color:#3b82f6;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">Group Stage — Results</div>
+      <ul style="margin:0;padding-left:18px;font-size:14px;line-height:1.8;color:#d1d5db;">
+        <li>Result is determined by the <strong style="color:#e5e7eb;">full-time (90-minute) score</strong>.</li>
+        <li>Home win, Draw, or Away win — straightforward 1X2 settlement.</li>
+      </ul>
+    </div>
+
+    <!-- Knockout stage -->
+    <div class="card" style="margin-bottom:12px;">
+      <div style="font-size:13px;font-weight:700;color:#f59e0b;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">Knockout Stage — Results</div>
+      <ul style="margin:0;padding-left:18px;font-size:14px;line-height:1.8;color:#d1d5db;">
+        <li>Result is still based on the <strong style="color:#e5e7eb;">90-minute score only</strong>. Extra time and penalty shootouts are <strong style="color:#e5e7eb;">not</strong> considered.</li>
+        <li>If the match is level after 90 minutes, the result is settled as a <strong style="color:#e5e7eb;">Draw</strong> — regardless of who wins on penalties.</li>
+        <li>"Draw" in a knockout match means the game was tied at full-time and went to extra time/penalties.</li>
+      </ul>
+    </div>
+
+    <!-- Settlement -->
+    <div class="card" style="margin-bottom:12px;">
+      <div style="font-size:13px;font-weight:700;color:#22c55e;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">Settlement — How Points Are Calculated</div>
+      <ul style="margin:0;padding-left:18px;font-size:14px;line-height:1.8;color:#d1d5db;">
+        <li>All stakes from all players on a match form a <strong style="color:#e5e7eb;">shared pool</strong>.</li>
+        <li>Only players who picked the correct outcome share the pool.</li>
+        <li>Your share is proportional to your <strong style="color:#e5e7eb;">stake × your locked odds</strong> relative to the total of all correct picks' weighted stakes.</li>
+        <li>If nobody picks correctly, all stakes are forfeited and no points are paid out.</li>
+        <li><strong style="color:#e5e7eb;">Net points</strong> = payout received − stake paid. This can be positive (profit) or negative (loss).</li>
+      </ul>
+      <div style="background:#0f172a;border-radius:8px;padding:12px;margin-top:12px;font-size:13px;color:#9ca3af;">
+        <div style="color:#e5e7eb;font-weight:600;margin-bottom:4px;">Example</div>
+        Pool = 200 pts. Correct pickers: Player A (stake 100, odds 2.0) and Player B (stake 60, odds 2.0).<br>
+        Weighted: A = 200, B = 120. Total = 320.<br>
+        A gets <strong style="color:#22c55e;">200 ÷ 320 × 200 = 125 pts</strong> payout → net <strong style="color:#22c55e;">+25 pts</strong>.<br>
+        B gets <strong style="color:#22c55e;">120 ÷ 320 × 200 = 75 pts</strong> payout → net <strong style="color:#22c55e;">+15 pts</strong>.
+      </div>
+    </div>
+
+    <!-- Settlement timing -->
+    <div class="card" style="margin-bottom:12px;">
+      <div style="font-size:13px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">Settlement Timing</div>
+      <ul style="margin:0;padding-left:18px;font-size:14px;line-height:1.8;color:#d1d5db;">
+        <li>Results are checked automatically every <strong style="color:#e5e7eb;">3 hours</strong>.</li>
+        <li>Bets are settled as soon as the result is confirmed by the data source.</li>
+        <li>Settled results appear on the <a href="/results" style="color:#22c55e;">Results</a> page and your <a href="/summary" style="color:#22c55e;">My Stats</a> page.</li>
+      </ul>
+    </div>
+  `;
+  html += htmlFooter('rules');
   res.send(html);
 });
 
