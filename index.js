@@ -1625,6 +1625,51 @@ app.get('/admin', async (req, res) => {
       <p style="font-size:11px;color:#6b7280;margin-top:8px;">Settles pending bets and fetches a fresh fixture snapshot immediately.</p>
 
       <hr style="border-color:#1f2937;margin:16px 0;">
+      <h3 style="font-size:14px;color:#9ca3af;">Manual Settlement</h3>
+      ${(() => {
+        const manualMsg = req.query.manualMsg || '';
+        const feedback = manualMsg === 'ok'
+          ? `<p style="font-size:13px;color:#22c55e;margin-bottom:8px;">✓ Fixture settled successfully.</p>`
+          : manualMsg ? `<p style="font-size:13px;color:#ef4444;margin-bottom:8px;">${manualMsg}</p>` : '';
+
+        // Gather distinct pending fixtures from allBets
+        const pendingFixtures = [];
+        const seen = new Set();
+        for (const b of allBets.filter(b => b.status === 'PENDING')) {
+          if (!seen.has(b.fixtureId)) {
+            seen.add(b.fixtureId);
+            const label = b.homeTeam && b.awayTeam ? `${b.homeTeam} vs ${b.awayTeam}` : b.fixtureId;
+            pendingFixtures.push({ id: b.fixtureId, label });
+          }
+        }
+
+        if (!pendingFixtures.length) {
+          return `${feedback}<p style="font-size:13px;color:#9ca3af;">No pending fixtures to settle.</p>`;
+        }
+
+        return `${feedback}
+          <p style="font-size:12px;color:#9ca3af;margin-bottom:10px;">Override API Football and settle a fixture manually.</p>
+          <form method="POST" action="/admin/manual-settle">
+            <select name="fixtureId" required style="width:100%;max-width:340px;margin-bottom:8px;padding:8px;background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:6px;font-size:13px;">
+              ${pendingFixtures.map(f => `<option value="${f.id}">${f.label}</option>`).join('')}
+            </select>
+            <br>
+            <div style="display:flex;gap:8px;margin-top:6px;max-width:340px;">
+              <label style="flex:1;text-align:center;">
+                <input type="radio" name="result" value="Home" required style="margin-right:4px;">Home win
+              </label>
+              <label style="flex:1;text-align:center;">
+                <input type="radio" name="result" value="Draw" style="margin-right:4px;">Draw
+              </label>
+              <label style="flex:1;text-align:center;">
+                <input type="radio" name="result" value="Away" style="margin-right:4px;">Away win
+              </label>
+            </div>
+            <button type="submit" style="margin-top:10px;background:#b45309;border-color:#b45309;">Settle fixture</button>
+          </form>`;
+      })()}
+
+      <hr style="border-color:#1f2937;margin:16px 0;">
       <h3 style="font-size:14px;color:#9ca3af;">Pending OTPs</h3>
       ${otpRows.length === 0
         ? `<p style="color:#9ca3af;font-size:13px;">No pending OTPs right now.</p>`
@@ -1736,6 +1781,60 @@ app.post('/admin/change-password', async (req, res) => {
 
   await db.set('admin:password', newPassword);
   res.redirect('/admin?pwMsg=ok');
+});
+
+// ADMIN – manual settle a specific fixture
+app.post('/admin/manual-settle', async (req, res) => {
+  if (!req.session.isAdmin) return res.redirect('/admin');
+  const { fixtureId, result } = req.body || {};
+  if (!fixtureId || !['Home','Draw','Away'].includes(result)) {
+    return res.redirect('/admin?manualMsg=Invalid+fixture+or+result.');
+  }
+
+  const allBets = await getBets();
+  const bets = allBets.filter(b => b.fixtureId === fixtureId && b.status === 'PENDING');
+  if (!bets.length) return res.redirect('/admin?manualMsg=No+pending+bets+for+that+fixture.');
+
+  // Pari-mutuel settlement — same logic as the automated engine
+  const grossArr = bets.map(b => b.selection === result ? b.stake * parseFloat(b.lockedOdds) : 0);
+  const sumGross = grossArr.reduce((a, v) => a + v, 0);
+  const totalStaked = bets.reduce((a, b) => a + b.stake, 0);
+
+  const logEntries = [];
+  for (let i = 0; i < bets.length; i++) {
+    const bet = bets[i];
+    const won = bet.selection === result;
+    bet.status = won ? 'WON' : 'LOST';
+    bet.result = result;
+    const finalPayout = sumGross > 0
+      ? Math.round((grossArr[i] / sumGross) * totalStaked * 10) / 10
+      : 0;
+    bet.netPoints = Math.round((finalPayout - bet.stake) * 10) / 10;
+    logEntries.push({ user: bet.user, selection: bet.selection, stake: bet.stake,
+      lockedOdds: bet.lockedOdds, status: bet.status, finalPayout, netPoints: bet.netPoints });
+    try {
+      const user = await getUserById(bet.user.toLowerCase());
+      if (user) {
+        user.totalNetPoints = Math.round((user.totalNetPoints + bet.netPoints) * 10) / 10;
+        await saveUser(user);
+      }
+    } catch (e) { /* ignore per-user errors */ }
+  }
+
+  // Write updated bets back to DB (allBets mutated in-place above)
+  await updateBets(allBets);
+
+  // Persist settlement log
+  const fb = bets[0];
+  await db.set(`settlementLog:${fixtureId}`, {
+    fixtureId, homeTeam: fb.homeTeam || '?', awayTeam: fb.awayTeam || '?',
+    leagueName: fb.leagueName || 'Unknown', result, totalStaked,
+    settledAt: moment().tz(TIMEZONE).format('DD MMM YYYY, HH:mm z'),
+    entries: logEntries,
+  });
+
+  console.log(`[ManualSettle] ${fb.homeTeam} vs ${fb.awayTeam} → ${result} | ${bets.length} bets settled`);
+  res.redirect('/admin?manualMsg=ok');
 });
 
 // ADMIN – email all settlement logs
