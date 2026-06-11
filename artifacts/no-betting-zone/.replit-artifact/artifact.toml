@@ -13,5 +13,9 @@ localPort = 3003
 [services.development]
 run = "node /home/runner/workspace/index.js"
 
+[services.production]
+run = "node /home/runner/workspace/index.js"
+deploymentTarget = "vm"
+
 [services.env]
 PORT = "3003"
