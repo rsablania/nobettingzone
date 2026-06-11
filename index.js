@@ -400,9 +400,9 @@ async function settlePendingBets() {
     console.log(`[Settlement] API Football returned ${afResults.length} finished fixture(s)`);
     for (const bet of pendingBets) {
       if (resultMap[bet.fixtureId]) continue; // already resolved
-      // Look up commence_time from in-memory snapshot
+      // Use commence_time stored on bet; fall back to snapshot for older bets
       const event = fixtureSnapshot.find(e => e.id === bet.fixtureId);
-      const commenceTime = event?.commence_time || '';
+      const commenceTime = bet.commenceTime || event?.commence_time || '';
       const result = matchFixtureResult(bet.homeTeam, bet.awayTeam, commenceTime, afResults);
       if (result) resultMap[bet.fixtureId] = result;
     }
@@ -1174,6 +1174,7 @@ app.post('/bet', requireAuth, async (req, res) => {
     homeTeam: event.home_team,
     awayTeam: event.away_team,
     leagueName: leagueName || event.sport_title || 'Unknown League',
+    commenceTime: event.commence_time || '',
     market: 'MATCH_RESULT',
     selection,
     stake,
