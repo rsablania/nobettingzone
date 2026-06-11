@@ -1776,9 +1776,20 @@ app.post('/forum', requireAuth, async (req, res) => {
   res.redirect('/forum');
 });
 
+// KEEP-ALIVE — self-ping every 5 minutes so autoscale never sleeps
+// Uses the first domain in REPLIT_DOMAINS (set automatically in production)
+const KEEP_ALIVE_DOMAIN = (process.env.REPLIT_DOMAINS || '').split(',')[0]?.trim();
+if (KEEP_ALIVE_DOMAIN) {
+  setInterval(() => {
+    axios.get(`https://${KEEP_ALIVE_DOMAIN}/ping`).catch(() => {});
+  }, 5 * 60 * 1000);
+}
+app.get('/ping', (req, res) => res.sendStatus(200));
+
 // START SERVER — load persisted snapshot into memory before accepting requests
 loadFixturesFromDB().then(() => {
   app.listen(PORT, () => {
     console.log(`No Betting Zone server running on port ${PORT}`);
+    if (KEEP_ALIVE_DOMAIN) console.log(`[KeepAlive] Pinging https://${KEEP_ALIVE_DOMAIN}/ping every 5 min`);
   });
 });
