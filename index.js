@@ -294,7 +294,7 @@ async function settlePendingBets() {
     summary.settled++;
 
     try {
-      const user = await getUserById(bet.user);
+      const user = await getUserById(bet.user.toLowerCase());
       if (user) {
         user.totalNetPoints = Math.round((user.totalNetPoints + bet.netPoints) * 10) / 10;
         await saveUser(user);
