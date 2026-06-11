@@ -677,6 +677,55 @@ app.get('/settle', async (req, res) => {
     </div>
     <p style="font-size:12px;color:#6b7280;">No API calls are made when you use the app — all data is from the nightly snapshot.</p>
     <p><a href="/">Back to home</a> • <a href="/leaderboard">View leaderboard</a></p>
+    <hr style="border-color:#1f2937;margin:16px 0;">
+    <h3 style="font-size:14px;color:#9ca3af;">Manual trigger</h3>
+    <form method="POST" action="/admin/run-job">
+      <input type="password" name="password" placeholder="Admin password" required
+        style="width:100%;max-width:280px;margin-bottom:8px;">
+      <br>
+      <button type="submit" style="background:#7c3aed;border-color:#7c3aed;">Run daily job now</button>
+    </form>
+    <p style="font-size:11px;color:#6b7280;margin-top:8px;">This settles pending bets and fetches a fresh fixture snapshot immediately, regardless of the time.</p>
+  `;
+  html += htmlFooter('settle');
+  res.send(html);
+});
+
+// ADMIN – manual daily job trigger (password-gated)
+app.post('/admin/run-job', async (req, res) => {
+  const { password } = req.body || {};
+  const adminPassword = process.env.SESSION_SECRET;
+  if (!adminPassword || password !== adminPassword) {
+    return res.status(403).send(`
+      <html><body style="background:#020617;color:#e5e7eb;font-family:system-ui;padding:24px;">
+        <h2>No Betting Zone</h2>
+        <p style="color:#ef4444;">Wrong password.</p>
+        <p><a href="/settle" style="color:#22c55e;">Back to schedule</a></p>
+      </body></html>
+    `);
+  }
+
+  let settleResult, fetchResult;
+  try { settleResult = await settlePendingBets(); } catch (e) { settleResult = { error: e.message }; }
+  try { await fetchAndStoreFixtures(); fetchResult = 'OK'; } catch (e) { fetchResult = e.message; }
+  const today = moment().tz(TIMEZONE).format('YYYY-MM-DD');
+  await db.set('dailyJob:lastRun', today);
+
+  const settled = settleResult.settled ?? 0;
+  const errors = settleResult.errors ?? [];
+
+  let html = htmlHeader('Job Complete - No Betting Zone');
+  html += `
+    <h2>Daily job complete</h2>
+    <div class="card">
+      <div style="font-size:13px;">Settlement: <strong style="color:#22c55e;">${settled} bet(s) settled</strong></div>
+      ${errors.length ? `<div style="font-size:12px;color:#ef4444;margin-top:4px;">${errors.join('<br>')}</div>` : ''}
+    </div>
+    <div class="card">
+      <div style="font-size:13px;">Fixture fetch: <strong style="color:${fetchResult === 'OK' ? '#22c55e' : '#ef4444'};">${fetchResult}</strong></div>
+      ${snapshotMeta ? `<div style="font-size:12px;color:#6b7280;margin-top:4px;">Snapshot updated: ${snapshotMeta.fetchedAt} • Credits left: ${snapshotMeta.creditsLeft}</div>` : ''}
+    </div>
+    <p><a href="/">View fixtures</a> • <a href="/settle">Back to schedule</a></p>
   `;
   html += htmlFooter('settle');
   res.send(html);
