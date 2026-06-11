@@ -201,9 +201,10 @@ setInterval(async () => {
     const key = `oddsRefresh:${now.format('YYYY-MM-DD-HH')}`;
     if (await db.get(key)) return;
     await db.set(key, true);
-    console.log(`[OddsRefresh] Fetching latest odds at ${now.format('HH:mm z')}…`);
+    console.log(`[OddsRefresh] Fetching latest odds + settling bets at ${now.format('HH:mm z')}…`);
     await fetchAndStoreFixtures();
-    console.log(`[OddsRefresh] Done`);
+    const result = await settlePendingBets();
+    console.log(`[OddsRefresh] Done — settled ${result.settled} bet(s)`);
   } catch (e) {
     console.error('[OddsRefresh] Error:', e.message);
   }
@@ -1331,7 +1332,7 @@ app.get('/rules', requireAuth, (req, res) => {
     <div class="card" style="margin-bottom:12px;">
       <div style="font-size:13px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">Settlement Timing</div>
       <ul style="margin:0;padding-left:18px;font-size:14px;line-height:1.8;color:#d1d5db;">
-        <li>Odds are refreshed automatically every <strong style="color:#e5e7eb;">2 hours</strong>. Results and settlement run once daily at <strong style="color:#e5e7eb;">11 PM IST</strong>.</li>
+        <li>Odds are refreshed and results settled automatically every <strong style="color:#e5e7eb;">2 hours</strong>. A full sweep also runs daily at <strong style="color:#e5e7eb;">11 PM IST</strong>.</li>
         <li>Bets are settled as soon as the result is confirmed by the data source.</li>
         <li>Settled results appear on the <a href="/results" style="color:#22c55e;">Results</a> page and your <a href="/summary" style="color:#22c55e;">My Stats</a> page.</li>
       </ul>
