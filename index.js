@@ -102,30 +102,8 @@ async function fetchAndStoreFixtures() {
   console.log(`[DailyJob] Snapshot stored: ${all.length} total events. Credits remaining: ${creditsLeft}`);
 }
 
-// Dummy event definition (shared between home page and match/bet routes)
-const DUMMY_EVENT = {
-  id: 'dummy-match-ab',
-  sport_title: 'Dummy Tournament',
-  sport_key: 'dummy',
-  commence_time: new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString(),
-  home_team: 'Team A',
-  away_team: 'Team B',
-  bookmakers: [{
-    key: 'dummy',
-    markets: [{
-      key: 'h2h',
-      outcomes: [
-        { name: 'Team A', price: 2.10 },
-        { name: 'Draw',   price: 3.40 },
-        { name: 'Team B', price: 3.20 },
-      ]
-    }]
-  }]
-};
-
 // Read a single event from the in-memory snapshot (no API call)
 async function getEventById(id) {
-  if (id === 'dummy-match-ab') return DUMMY_EVENT;
   return fixtureSnapshot.find(e => e.id === id) || null;
 }
 
@@ -534,7 +512,7 @@ app.get('/', async (req, res) => {
     // Show events that haven't kicked off yet (betting still open or about to close)
     const events = fixtureSnapshot.filter(ev => new Date(ev.commence_time) > now);
 
-    const byLeague = { 'Dummy Tournament': [DUMMY_EVENT] };
+    const byLeague = {};
     for (const ev of events) {
       const title = ev.sport_title || 'Unknown League';
       if (!byLeague[title]) byLeague[title] = [];
@@ -604,7 +582,7 @@ app.get('/', async (req, res) => {
         for (const ev of list) {
           const kickoff = new Date(ev.commence_time);
           const minsLeft = Math.round((kickoff - now) / 60000);
-          const bettingOpen = ev.id === 'dummy-match-ab' || kickoff - now > cutoff;
+          const bettingOpen = kickoff - now > cutoff;
           const dateStr = moment(ev.commence_time).tz(TIMEZONE).format('DD MMM, HH:mm');
           const badge = !bettingOpen
             ? `<span style="font-size:11px;color:#6b7280;border:1px solid #374151;border-radius:4px;padding:1px 5px;">Closed</span>`
@@ -767,14 +745,12 @@ app.post('/bet', requireAuth, async (req, res) => {
   const event = await getEventById(eventId);
   if (!event) return res.status(400).send('Match not found');
 
-  // Betting closes 10 minutes before kick-off (dummy match is always open)
-  if (eventId !== 'dummy-match-ab') {
-    const kickoff = new Date(event.commence_time);
-    const tenMinsBefore = new Date(kickoff.getTime() - 10 * 60 * 1000);
-    if (new Date() >= tenMinsBefore) {
-      const timeStr = moment(kickoff).tz(TIMEZONE).format('DD MMM, HH:mm');
-      return res.send(`Betting closed — predictions locked 10 minutes before kick-off (${timeStr} IST).`);
-    }
+  // Betting closes 10 minutes before kick-off
+  const kickoff = new Date(event.commence_time);
+  const tenMinsBefore = new Date(kickoff.getTime() - 10 * 60 * 1000);
+  if (new Date() >= tenMinsBefore) {
+    const timeStr = moment(kickoff).tz(TIMEZONE).format('DD MMM, HH:mm');
+    return res.send(`Betting closed — predictions locked 10 minutes before kick-off (${timeStr} IST).`);
   }
 
   // One prediction per user per event
