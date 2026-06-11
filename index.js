@@ -335,6 +335,7 @@ async function settlePendingBets() {
     const sumGross = grossArr.reduce((a, v) => a + v, 0);
     const totalStaked = bets.reduce((a, b) => a + b.stake, 0);
 
+    const logEntries = [];
     for (let i = 0; i < bets.length; i++) {
       const bet = bets[i];
       const won = bet.selection === result;
@@ -346,6 +347,16 @@ async function settlePendingBets() {
         ? Math.round((grossArr[i] / sumGross) * totalStaked * 10) / 10
         : 0;
       bet.netPoints = Math.round((finalPayout - bet.stake) * 10) / 10;
+
+      logEntries.push({
+        user: bet.user,
+        selection: bet.selection,
+        stake: bet.stake,
+        lockedOdds: bet.lockedOdds,
+        status: bet.status,
+        finalPayout,
+        netPoints: bet.netPoints,
+      });
 
       changed = true;
       summary.settled++;
@@ -360,6 +371,19 @@ async function settlePendingBets() {
         summary.errors.push(`User update error for ${bet.user}: ${e.message}`);
       }
     }
+
+    // Persist settlement log for this fixture
+    const fb = bets[0];
+    await db.set(`settlementLog:${fb.fixtureId}`, {
+      fixtureId: fb.fixtureId,
+      homeTeam: fb.homeTeam || '?',
+      awayTeam: fb.awayTeam || '?',
+      leagueName: fb.leagueName || 'Unknown',
+      result,
+      totalStaked,
+      settledAt: moment().tz(TIMEZONE).format('DD MMM YYYY, HH:mm z'),
+      entries: logEntries,
+    });
   }
 
   if (changed) await updateBets(allBets);
@@ -992,6 +1016,8 @@ app.get('/settle', (req, res) => res.redirect('/admin'));
 app.get('/admin', async (req, res) => {
   const lastRun = (await db.get('dailyJob:lastRun')) || 'Never';
   const allBets = await getBets();
+  const settlementLogKeys = await db.list('settlementLog:');
+  const logCount = settlementLogKeys.length;
   const pending = allBets.filter(b => b.status === 'PENDING').length;
   const won = allBets.filter(b => b.status === 'WON').length;
   const lost = allBets.filter(b => b.status === 'LOST').length;
@@ -1073,6 +1099,17 @@ app.get('/admin', async (req, res) => {
         <button type="submit" style="background:#374151;border-color:#374151;">Change password</button>
       </form>
 
+      <hr style="border-color:#1f2937;margin:16px 0;">
+      <h3 style="font-size:14px;color:#9ca3af;">Settlement Logs</h3>
+      ${logCount === 0
+        ? `<p style="font-size:13px;color:#9ca3af;">No matches settled yet.</p>`
+        : `<p style="font-size:13px;color:#9ca3af;margin-bottom:10px;">${logCount} match${logCount !== 1 ? 'es' : ''} settled so far.</p>
+           <form method="POST" action="/admin/send-settlement-logs">
+             <button type="submit" style="background:#0369a1;border-color:#0369a1;">📧 Email all logs →</button>
+           </form>
+           <p style="font-size:11px;color:#6b7280;margin-top:6px;">Sends full breakdown to gletterdash@gmail.com</p>`
+      }
+
       <p style="margin-top:24px;font-size:12px;"><a href="/admin/logout-admin" style="color:#6b7280;">🔒 Lock admin panel</a></p>
     `;
   }
@@ -1138,6 +1175,77 @@ app.post('/admin/change-password', async (req, res) => {
 
   await db.set('admin:password', newPassword);
   res.redirect('/admin?pwMsg=ok');
+});
+
+// ADMIN – email all settlement logs
+app.post('/admin/send-settlement-logs', async (req, res) => {
+  if (!req.session.isAdmin) return res.redirect('/admin');
+
+  const keys = await db.list('settlementLog:');
+  if (!keys.length) return res.redirect('/admin?logMsg=No+settlement+logs+to+send.');
+
+  const logs = [];
+  for (const key of keys) {
+    const log = await db.get(key);
+    if (log) logs.push(log);
+  }
+  logs.sort((a, b) => a.settledAt < b.settledAt ? 1 : -1); // newest first
+
+  const matchSections = logs.map(log => {
+    const resultLabel = log.result === 'Home' ? `${log.homeTeam} wins`
+      : log.result === 'Away' ? `${log.awayTeam} wins` : 'Draw';
+    const entryRows = log.entries.map(e => {
+      const color = e.status === 'WON' ? '#16a34a' : '#dc2626';
+      const sign = e.netPoints >= 0 ? '+' : '';
+      return `<tr style="border-bottom:1px solid #e5e7eb;">
+        <td style="padding:6px 10px;">${e.user}</td>
+        <td style="padding:6px 10px;">${e.selection} @ ${e.lockedOdds}</td>
+        <td style="padding:6px 10px;text-align:center;">${e.stake}</td>
+        <td style="padding:6px 10px;text-align:center;">${e.finalPayout.toFixed(1)}</td>
+        <td style="padding:6px 10px;text-align:center;font-weight:bold;color:${color};">${sign}${e.netPoints.toFixed(1)}</td>
+        <td style="padding:6px 10px;text-align:center;color:${color};">${e.status}</td>
+      </tr>`;
+    }).join('');
+
+    return `
+      <h3 style="font-family:sans-serif;margin:24px 0 4px;">${log.homeTeam} vs ${log.awayTeam}</h3>
+      <p style="font-family:sans-serif;color:#6b7280;margin:0 0 8px;font-size:13px;">
+        ${log.leagueName} &nbsp;·&nbsp; Result: <strong style="color:#111;">${resultLabel}</strong>
+        &nbsp;·&nbsp; Settled: ${log.settledAt}
+        &nbsp;·&nbsp; Total staked: <strong>${log.totalStaked} pts</strong>
+      </p>
+      <table style="border-collapse:collapse;font-family:sans-serif;font-size:13px;width:100%;max-width:600px;">
+        <thead>
+          <tr style="background:#f3f4f6;">
+            <th style="padding:6px 10px;text-align:left;">Player</th>
+            <th style="padding:6px 10px;text-align:left;">Pick @ Odds</th>
+            <th style="padding:6px 10px;text-align:center;">Stake</th>
+            <th style="padding:6px 10px;text-align:center;">Payout</th>
+            <th style="padding:6px 10px;text-align:center;">Net</th>
+            <th style="padding:6px 10px;text-align:center;">Result</th>
+          </tr>
+        </thead>
+        <tbody>${entryRows}</tbody>
+      </table>`;
+  }).join('<hr style="margin:20px 0;border-color:#e5e7eb;">');
+
+  try {
+    await resend.emails.send({
+      from: 'No Betting Zone <onboarding@resend.dev>',
+      to: 'gletterdash@gmail.com',
+      subject: `Settlement Logs — ${logs.length} match${logs.length !== 1 ? 'es' : ''}`,
+      html: `
+        <h2 style="font-family:sans-serif;">⚽ No Betting Zone — Settlement Logs</h2>
+        <p style="font-family:sans-serif;color:#6b7280;">${logs.length} match${logs.length !== 1 ? 'es' : ''} settled in total.</p>
+        <hr style="border-color:#e5e7eb;">
+        ${matchSections}
+      `
+    });
+    res.redirect('/admin?logMsg=ok');
+  } catch (e) {
+    console.error('[SettlementEmail]', e.message);
+    res.redirect('/admin?logMsg=Email+failed:+' + encodeURIComponent(e.message));
+  }
 });
 
 // LEADERBOARD
