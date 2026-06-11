@@ -24,51 +24,28 @@ function normalizeTeamName(name) {
   return (name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-// Fetch finished World Cup results from API Football.
-// Returns a list of { homeTeam, awayTeam, date, result, homeGoals, awayGoals }
-// where result is 'Home'|'Away'|'Draw' based on the 90-minute score only.
-async function fetchWorldCupResultsFromApiFootball() {
-  const resp = await axios.get(`${API_FOOTBALL_BASE}/fixtures`, {
-    params: { league: API_FOOTBALL_WC_LEAGUE, season: API_FOOTBALL_WC_SEASON },
-    headers: { 'x-apisports-key': API_FOOTBALL_KEY },
-  });
-  const fixtures = resp.data?.response || [];
-  const finished = fixtures.filter(f => ['FT', 'AET', 'PEN'].includes(f.fixture?.status?.short));
-  return finished.map(f => {
-    // Always use 90-min score — AET/PEN are settled as Draw per our rules
-    const homeGoals = f.score?.fulltime?.home ?? f.goals?.home ?? null;
-    const awayGoals = f.score?.fulltime?.away ?? f.goals?.away ?? null;
-    let result = null;
-    if (homeGoals !== null && awayGoals !== null) {
-      result = homeGoals > awayGoals ? 'Home' : awayGoals > homeGoals ? 'Away' : 'Draw';
+// Fetch completed match results from the Odds API scores endpoint.
+// Returns a map of { fixtureId → 'Home'|'Away'|'Draw' } for all completed fixtures.
+async function fetchResultsFromOddsApi() {
+  const resultMap = {};
+  for (const sportKey of SOCCER_SPORT_KEYS) {
+    try {
+      const resp = await axios.get(`${ODDS_API_BASE}/sports/${sportKey}/scores`, {
+        params: { apiKey: ODDS_API_KEY, daysFrom: 3 },
+      });
+      const games = Array.isArray(resp.data) ? resp.data : [];
+      for (const g of games) {
+        if (!g.completed || !g.scores || g.scores.length < 2) continue;
+        const homeScore = parseInt(g.scores.find(s => s.name === g.home_team)?.score ?? -1);
+        const awayScore = parseInt(g.scores.find(s => s.name === g.away_team)?.score ?? -1);
+        if (isNaN(homeScore) || isNaN(awayScore) || homeScore < 0 || awayScore < 0) continue;
+        resultMap[g.id] = homeScore > awayScore ? 'Home' : awayScore > homeScore ? 'Away' : 'Draw';
+      }
+    } catch (e) {
+      console.error(`[Settlement] Odds API scores error [${sportKey}]:`, e.message);
     }
-    return {
-      homeTeam: f.teams?.home?.name || '',
-      awayTeam: f.teams?.away?.name || '',
-      date: (f.fixture?.date || '').substring(0, 10), // YYYY-MM-DD
-      status: f.fixture?.status?.short,
-      homeGoals,
-      awayGoals,
-      result,
-    };
-  }).filter(f => f.result !== null);
-}
-
-// Match an Odds API fixture against API Football results list.
-// Returns 'Home'|'Away'|'Draw'|null.
-function matchFixtureResult(homeTeam, awayTeam, commenceTime, afResults) {
-  const date = (commenceTime || '').substring(0, 10);
-  const nHome = normalizeTeamName(homeTeam);
-  const nAway = normalizeTeamName(awayTeam);
-  for (const af of afResults) {
-    if (af.date !== date) continue;
-    const afHome = normalizeTeamName(af.homeTeam);
-    const afAway = normalizeTeamName(af.awayTeam);
-    const homeMatch = nHome === afHome || nHome.includes(afHome) || afHome.includes(nHome);
-    const awayMatch = nAway === afAway || nAway.includes(afAway) || afAway.includes(nAway);
-    if (homeMatch && awayMatch) return af.result;
   }
-  return null;
+  return resultMap;
 }
 
 const TIMEZONE = 'Asia/Kolkata';
@@ -393,22 +370,19 @@ async function settlePendingBets() {
   const pendingBets = allBets.filter(b => b.status === 'PENDING');
   if (!pendingBets.length) return summary;
 
-  // Fetch finished World Cup results from API Football
-  const resultMap = {}; // eventId → 'Home' | 'Away' | 'Draw'
+  // Fetch finished results from the Odds API scores endpoint (direct ID match)
+  const resultMap = {}; // fixtureId → 'Home' | 'Away' | 'Draw'
   try {
-    const afResults = await fetchWorldCupResultsFromApiFootball();
-    console.log(`[Settlement] API Football returned ${afResults.length} finished fixture(s)`);
+    const oddsResults = await fetchResultsFromOddsApi();
+    const count = Object.keys(oddsResults).length;
+    console.log(`[Settlement] Odds API scores returned ${count} completed fixture(s)`);
     for (const bet of pendingBets) {
-      if (resultMap[bet.fixtureId]) continue; // already resolved
-      // Use commence_time stored on bet; fall back to snapshot for older bets
-      const event = fixtureSnapshot.find(e => e.id === bet.fixtureId);
-      const commenceTime = bet.commenceTime || event?.commence_time || '';
-      const result = matchFixtureResult(bet.homeTeam, bet.awayTeam, commenceTime, afResults);
-      if (result) resultMap[bet.fixtureId] = result;
+      if (resultMap[bet.fixtureId]) continue;
+      if (oddsResults[bet.fixtureId]) resultMap[bet.fixtureId] = oddsResults[bet.fixtureId];
     }
   } catch (e) {
-    summary.errors.push(`API Football fetch error: ${e.message}`);
-    console.error('[Settlement] API Football error:', e.message);
+    summary.errors.push(`Odds API scores error: ${e.message}`);
+    console.error('[Settlement] Odds API scores error:', e.message);
   }
 
   // Group pending bets by fixture (only those with a known result)
