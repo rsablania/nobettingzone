@@ -258,10 +258,8 @@ async function settlePendingBets() {
   const pendingBets = allBets.filter(b => b.status === 'PENDING');
   if (!pendingBets.length) return summary;
 
-  // Only fetch scores for sport keys that have pending bets
-  const sportKeys = [...new Set(pendingBets.map(b => b.sportKey).filter(Boolean))];
-  if (!sportKeys.length) return summary;
-
+  // Fetch scores for real sport keys (skip 'dummy')
+  const sportKeys = [...new Set(pendingBets.map(b => b.sportKey).filter(k => k && k !== 'dummy'))];
   const resultMap = {}; // eventId → 'Home' | 'Away' | 'Draw'
   for (const sportKey of sportKeys) {
     try {
@@ -278,29 +276,48 @@ async function settlePendingBets() {
     }
   }
 
-  let changed = false;
-  for (const bet of allBets) {
-    if (bet.status !== 'PENDING') continue;
+  // Group pending bets by fixture (only those with a known result)
+  const byFixture = {};
+  for (const bet of pendingBets) {
     const result = resultMap[bet.fixtureId];
     if (!result) continue;
+    if (!byFixture[bet.fixtureId]) byFixture[bet.fixtureId] = { result, bets: [] };
+    byFixture[bet.fixtureId].bets.push(bet);
+  }
 
-    const won = bet.selection === result;
-    bet.status = won ? 'WON' : 'LOST';
-    bet.netPoints = won
-      ? Math.round(bet.stake * (parseFloat(bet.lockedOdds) - 1) * 10) / 10
-      : -bet.stake;
-    bet.result = result;
-    changed = true;
-    summary.settled++;
+  let changed = false;
+  for (const { result, bets } of Object.values(byFixture)) {
+    // Gross points: WON = stake × odds, LOST = 0
+    const grossArr = bets.map(b =>
+      b.selection === result ? b.stake * parseFloat(b.lockedOdds) : 0
+    );
+    const sumGross = grossArr.reduce((a, v) => a + v, 0);
+    const totalStaked = bets.reduce((a, b) => a + b.stake, 0);
 
-    try {
-      const user = await getUserById(bet.user.toLowerCase());
-      if (user) {
-        user.totalNetPoints = Math.round((user.totalNetPoints + bet.netPoints) * 10) / 10;
-        await saveUser(user);
+    for (let i = 0; i < bets.length; i++) {
+      const bet = bets[i];
+      const won = bet.selection === result;
+      bet.status = won ? 'WON' : 'LOST';
+      bet.result = result;
+
+      // Proportional payout from the pool; if no one won, everyone loses stake
+      const finalPayout = sumGross > 0
+        ? Math.round((grossArr[i] / sumGross) * totalStaked * 10) / 10
+        : 0;
+      bet.netPoints = Math.round((finalPayout - bet.stake) * 10) / 10;
+
+      changed = true;
+      summary.settled++;
+
+      try {
+        const user = await getUserById(bet.user.toLowerCase());
+        if (user) {
+          user.totalNetPoints = Math.round((user.totalNetPoints + bet.netPoints) * 10) / 10;
+          await saveUser(user);
+        }
+      } catch (e) {
+        summary.errors.push(`User update error for ${bet.user}: ${e.message}`);
       }
-    } catch (e) {
-      summary.errors.push(`User update error for ${bet.user}: ${e.message}`);
     }
   }
 
