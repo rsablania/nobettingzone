@@ -866,16 +866,22 @@ app.get('/match', requireAuth, async (req, res) => {
           <p style="margin:14px 0 6px;">Choose stake:</p>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
             ${[20, 40, 60, 80, 100].map((s, i) => `
-              <label style="flex:1;min-width:48px;text-align:center;cursor:pointer;">
+              <label style="flex:1;min-width:48px;text-align:center;cursor:pointer;" onclick="selectStake(this, ${s})">
                 <input type="radio" name="stake" value="${s}" ${i === 4 ? 'checked' : ''} required style="display:none;">
-                <span class="stake-btn" style="display:block;padding:8px 4px;border:1px solid #374151;border-radius:8px;font-size:14px;font-weight:600;background:#1f2937;color:#e5e7eb;">${s}</span>
+                <span class="stake-btn" style="display:block;padding:8px 4px;border:1px solid ${i === 4 ? '#7c3aed' : '#374151'};border-radius:8px;font-size:14px;font-weight:600;background:${i === 4 ? '#4c1d95' : '#1f2937'};color:#fff;">${s}</span>
               </label>`).join('')}
           </div>
-          <style>
-            input[type=radio][name=stake]:checked + .stake-btn {
-              border-color:#7c3aed;background:#4c1d95;color:#fff;
+          <script>
+            function selectStake(clicked, val) {
+              document.querySelectorAll('.stake-btn').forEach(function(btn) {
+                btn.style.borderColor = '#374151';
+                btn.style.background = '#1f2937';
+              });
+              var span = clicked.querySelector('.stake-btn');
+              span.style.borderColor = '#7c3aed';
+              span.style.background = '#4c1d95';
             }
-          </style>
+          </script>
           <button type="submit" style="margin-top:4px;width:100%;">Place Bet</button>
         </form>
         <p style="margin-top:8px;font-size:11px;color:#6b7280;">${odds ? '📊 Live bookmaker odds' : '📊 Estimated odds'}</p>
