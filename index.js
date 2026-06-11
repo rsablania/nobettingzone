@@ -132,6 +132,24 @@ setInterval(async () => {
   }
 }, 60 * 1000);
 
+// Settlement-only pass every 3 hours (runs at :00 of hours 0,3,6,9,12,15,18,21 IST)
+// With 1 sport key this costs 1 API credit per pass = ~8 credits/day extra.
+setInterval(async () => {
+  try {
+    const now = moment().tz(TIMEZONE);
+    const h = now.hour();
+    if (h === 23) return;                         // 11 PM handled by full daily job
+    if (h % 3 !== 0 || now.minute() !== 0) return;
+    const key = `settlementPass:${now.format('YYYY-MM-DD-HH')}`;
+    if (await db.get(key)) return;
+    await db.set(key, true);
+    console.log(`[SettlementPass] Running at ${now.format('HH:mm z')}…`);
+    const result = await settlePendingBets();
+    console.log(`[SettlementPass] Done — settled ${result.settled} bets`);
+  } catch (e) {
+    console.error('[SettlementPass] Error:', e.message);
+  }
+}, 60 * 1000);
 
 // Leaderboard email at 11:59 PM IST daily
 async function sendLeaderboardEmail() {
