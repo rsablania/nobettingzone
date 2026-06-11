@@ -1038,11 +1038,35 @@ app.post('/bet', requireAuth, async (req, res) => {
 
   await addBet(bet);
 
+  const selectionLabel = selection === 'Home' ? `${event.home_team} wins`
+    : selection === 'Away' ? `${event.away_team} wins`
+    : 'Draw';
+
   res.send(`
-    <html><body style="background:#020617;color:#e5e7eb;font-family:system-ui;padding:16px;">
-      <h2>No Betting Zone ✓</h2>
-      <p>${user.displayName}, you predicted <strong>${selection}</strong> @ ${lockedOdds} — ${stake} pts staked.</p>
-      <p><a href="/" style="color:#22c55e;">Back to home</a> | <a href="/summary" style="color:#22c55e;">View your bets</a></p>
+    <html><body style="background:#020617;color:#e5e7eb;font-family:system-ui;padding:20px;">
+      <div style="max-width:400px;margin:0 auto;text-align:center;padding-top:40px;">
+        <div style="font-size:48px;margin-bottom:12px;">✅</div>
+        <h2 style="font-size:22px;margin-bottom:6px;">Bet Placed!</h2>
+        <p style="font-size:15px;color:#9ca3af;margin-bottom:24px;">${event.home_team} vs ${event.away_team}</p>
+        <div style="background:#111827;border:1px solid #1f2937;border-radius:12px;padding:20px;margin-bottom:24px;">
+          <div style="font-size:13px;color:#9ca3af;margin-bottom:4px;">Your pick</div>
+          <div style="font-size:22px;font-weight:700;color:#e5e7eb;margin-bottom:16px;">${selectionLabel}</div>
+          <div style="display:flex;justify-content:space-around;">
+            <div>
+              <div style="font-size:13px;color:#9ca3af;">Stake</div>
+              <div style="font-size:20px;font-weight:700;color:#a78bfa;">${stake} pts</div>
+            </div>
+            <div>
+              <div style="font-size:13px;color:#9ca3af;">Odds</div>
+              <div style="font-size:20px;font-weight:700;color:#22c55e;">${lockedOdds}x</div>
+            </div>
+          </div>
+        </div>
+        <div style="display:flex;gap:12px;">
+          <a href="/" style="flex:1;padding:12px;background:#1f2937;color:#e5e7eb;border-radius:8px;text-decoration:none;font-size:15px;text-align:center;">Home</a>
+          <a href="/summary" style="flex:1;padding:12px;background:#22c55e;color:#000;border-radius:8px;text-decoration:none;font-size:15px;font-weight:600;text-align:center;">My Bets</a>
+        </div>
+      </div>
     </body></html>
   `);
 });
