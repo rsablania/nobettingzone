@@ -1449,10 +1449,16 @@ app.get('/forum', requireAuth, async (req, res) => {
   html += `<h3 style="margin-top:16px;">Messages</h3>`;
 
   for (const m of messages.slice().reverse()) {
+    const ts = m.createdAt
+      ? moment(m.createdAt).tz(TIMEZONE).format('DD MMM, HH:mm')
+      : '';
     html += `
       <div class="card">
-        <div style="font-size:12px;color:#9ca3af;">${m.name}</div>
-        <div>${m.text}</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+          <span style="font-size:12px;font-weight:600;color:#e5e7eb;">${m.name}</span>
+          <span style="font-size:11px;color:#4b5563;">${ts}</span>
+        </div>
+        <div style="font-size:14px;">${m.text}</div>
       </div>
     `;
   }
