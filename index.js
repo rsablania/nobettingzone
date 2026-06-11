@@ -198,6 +198,11 @@ function requireAuth(req, res, next) {
   next();
 }
 
+const DEFAULT_ADMIN_PASSWORD = 'locomotive123@';
+async function getAdminPassword() {
+  return (await db.get('admin:password')) || DEFAULT_ADMIN_PASSWORD;
+}
+
 async function addBet(bet) {
   const allBets = (await db.get('bets')) || [];
   allBets.push(bet);
@@ -845,12 +850,25 @@ app.get('/settle', async (req, res) => {
     <hr style="border-color:#1f2937;margin:16px 0;">
     <h3 style="font-size:14px;color:#9ca3af;">Manual trigger</h3>
     <form method="POST" action="/admin/run-job">
-      <input type="password" name="password" placeholder="Admin password" required
+      <input type="password" name="password" placeholder="Admin password" required autocomplete="current-password"
         style="width:100%;max-width:280px;margin-bottom:8px;">
       <br>
       <button type="submit" style="background:#7c3aed;border-color:#7c3aed;">Run daily job now</button>
     </form>
     <p style="font-size:11px;color:#6b7280;margin-top:8px;">This settles pending bets and fetches a fresh fixture snapshot immediately, regardless of the time.</p>
+
+    <hr style="border-color:#1f2937;margin:16px 0;">
+    <h3 style="font-size:14px;color:#9ca3af;">Change admin password</h3>
+    ${req.query.pwMsg ? `<p style="font-size:13px;color:${req.query.pwMsg === 'ok' ? '#22c55e' : '#ef4444'};">${req.query.pwMsg === 'ok' ? 'Password changed successfully.' : req.query.pwMsg}</p>` : ''}
+    <form method="POST" action="/admin/change-password">
+      <input type="password" name="oldPassword" placeholder="Current password" required autocomplete="current-password"
+        style="width:100%;max-width:280px;margin-bottom:8px;">
+      <br>
+      <input type="password" name="newPassword" placeholder="New password (min 6 chars)" required autocomplete="new-password"
+        style="width:100%;max-width:280px;margin-bottom:8px;">
+      <br>
+      <button type="submit" style="background:#374151;border-color:#374151;">Change password</button>
+    </form>
   `;
   html += htmlFooter('settle');
   res.send(html);
@@ -859,8 +877,8 @@ app.get('/settle', async (req, res) => {
 // ADMIN – manual daily job trigger (password-gated)
 app.post('/admin/run-job', async (req, res) => {
   const { password } = req.body || {};
-  const adminPassword = process.env.SESSION_SECRET;
-  if (!adminPassword || password !== adminPassword) {
+  const adminPassword = await getAdminPassword();
+  if (password !== adminPassword) {
     return res.status(403).send(`
       <html><body style="background:#020617;color:#e5e7eb;font-family:system-ui;padding:24px;">
         <h2>No Betting Zone</h2>
@@ -894,6 +912,19 @@ app.post('/admin/run-job', async (req, res) => {
   `;
   html += htmlFooter('settle');
   res.send(html);
+});
+
+// ADMIN – change admin password
+app.post('/admin/change-password', async (req, res) => {
+  const { oldPassword, newPassword } = req.body || {};
+  if (!oldPassword || !newPassword) return res.redirect('/settle?pwMsg=All+fields+are+required.');
+  if (newPassword.length < 6) return res.redirect('/settle?pwMsg=New+password+must+be+at+least+6+characters.');
+
+  const adminPassword = await getAdminPassword();
+  if (oldPassword !== adminPassword) return res.redirect('/settle?pwMsg=Current+password+is+incorrect.');
+
+  await db.set('admin:password', newPassword);
+  res.redirect('/settle?pwMsg=ok');
 });
 
 // LEADERBOARD
