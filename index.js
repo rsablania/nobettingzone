@@ -880,6 +880,53 @@ app.get('/match', requireAuth, async (req, res) => {
           <button type="submit" style="margin-top:4px;width:100%;">Place Bet</button>
         </form>
         <p style="margin-top:8px;font-size:11px;color:#6b7280;">${odds ? '📊 Live bookmaker odds' : '📊 Estimated odds'}</p>
+
+        <!-- Confirmation overlay -->
+        <div id="bet-confirm-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:999;align-items:center;justify-content:center;">
+          <div style="background:#111827;border:1px solid #374151;border-radius:14px;padding:24px 20px;max-width:320px;width:90%;text-align:center;">
+            <div style="font-size:15px;font-weight:700;color:#e5e7eb;margin-bottom:6px;">Confirm your bet</div>
+            <div style="font-size:13px;color:#9ca3af;margin-bottom:14px;">${home} vs ${away}</div>
+            <div style="background:#1f2937;border-radius:8px;padding:12px;margin-bottom:16px;">
+              <div style="font-size:13px;color:#9ca3af;">Pick</div>
+              <div id="confirm-pick" style="font-size:16px;font-weight:700;color:#e5e7eb;margin-top:2px;"></div>
+              <div style="font-size:13px;color:#9ca3af;margin-top:8px;">Stake</div>
+              <div id="confirm-stake" style="font-size:16px;font-weight:700;color:#a78bfa;margin-top:2px;"></div>
+            </div>
+            <div style="display:flex;gap:10px;">
+              <button id="bet-cancel-btn" style="flex:1;background:#1f2937;color:#9ca3af;border:1px solid #374151;padding:12px;border-radius:8px;font-size:14px;font-weight:600;">Cancel</button>
+              <button id="bet-confirm-btn" style="flex:1;padding:12px;border-radius:8px;font-size:14px;font-weight:600;">Confirm</button>
+            </div>
+          </div>
+        </div>
+        <script>
+          (function() {
+            const form = document.querySelector('form[action="/bet"]');
+            const overlay = document.getElementById('bet-confirm-overlay');
+            const labelMap = { Home: '${home} wins', Draw: 'Draw', Away: '${away} wins' };
+            let confirmed = false;
+
+            form.addEventListener('submit', function(e) {
+              if (confirmed) return;
+              e.preventDefault();
+              const sel = form.querySelector('input[name="selection"]:checked');
+              const stk = form.querySelector('input[name="stake"]:checked');
+              if (!sel || !stk) return;
+              document.getElementById('confirm-pick').textContent = labelMap[sel.value] || sel.value;
+              document.getElementById('confirm-stake').textContent = stk.value + ' pts';
+              overlay.style.display = 'flex';
+            });
+
+            document.getElementById('bet-cancel-btn').addEventListener('click', function() {
+              overlay.style.display = 'none';
+            });
+
+            document.getElementById('bet-confirm-btn').addEventListener('click', function() {
+              confirmed = true;
+              overlay.style.display = 'none';
+              form.submit();
+            });
+          })();
+        </script>
       `;
     }
 
