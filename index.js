@@ -190,15 +190,15 @@ setInterval(async () => {
   }
 }, 60 * 1000);
 
-// Odds refresh every 2 hours (runs at :00 of hours 0,2,4,6,8,10,12,14,16,18,20,22 IST)
-// Fetches latest fixtures+odds from API and updates the in-memory snapshot.
+// Odds + settlement refresh every 30 mins (runs at :00 and :30 of every hour except 11 PM)
 setInterval(async () => {
   try {
     const now = moment().tz(TIMEZONE);
     const h = now.hour();
+    const m = now.minute();
     if (h === 23) return;                         // 11 PM handled by full daily job
-    if (h % 2 !== 0 || now.minute() !== 0) return;
-    const key = `oddsRefresh:${now.format('YYYY-MM-DD-HH')}`;
+    if (m !== 0 && m !== 30) return;
+    const key = `oddsRefresh:${now.format('YYYY-MM-DD-HH-mm')}`;
     if (await db.get(key)) return;
     await db.set(key, true);
     console.log(`[OddsRefresh] Fetching latest odds + settling bets at ${now.format('HH:mm z')}…`);
@@ -1332,7 +1332,7 @@ app.get('/rules', requireAuth, (req, res) => {
     <div class="card" style="margin-bottom:12px;">
       <div style="font-size:13px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">Settlement Timing</div>
       <ul style="margin:0;padding-left:18px;font-size:14px;line-height:1.8;color:#d1d5db;">
-        <li>Odds are refreshed and results settled automatically every <strong style="color:#e5e7eb;">2 hours</strong>. A full sweep also runs daily at <strong style="color:#e5e7eb;">11 PM IST</strong>.</li>
+        <li>Odds are refreshed and results settled automatically every <strong style="color:#e5e7eb;">30 minutes</strong>. A full sweep also runs daily at <strong style="color:#e5e7eb;">11 PM IST</strong>.</li>
         <li>Bets are settled as soon as the result is confirmed by the data source.</li>
         <li>Settled results appear on the <a href="/results" style="color:#22c55e;">Results</a> page and your <a href="/summary" style="color:#22c55e;">My Stats</a> page.</li>
       </ul>
