@@ -1281,52 +1281,83 @@ app.get('/summary', requireAuth, async (req, res) => {
   if (!bets.length) {
     html += `<p style="color:#9ca3af;">No predictions yet. <a href="/">Pick a match</a> to get started.</p>`;
   } else {
-    // Pre-fetch events still in snapshot (for kickoff date on pending bets)
-    const eventCache = {};
+    // Group tranches by fixture — one card per match
+    const byFixture = {};
     for (const b of bets) {
-      if (b.status === 'PENDING' && !eventCache[b.fixtureId]) {
-        const ev = await getEventById(b.fixtureId);
-        if (ev) eventCache[b.fixtureId] = ev;
+      if (!byFixture[b.fixtureId]) byFixture[b.fixtureId] = [];
+      byFixture[b.fixtureId].push(b);
+    }
+
+    // Pre-fetch snapshot events for pending fixtures (kickoff time)
+    const eventCache = {};
+    for (const [fid, tranches] of Object.entries(byFixture)) {
+      if (tranches.some(t => t.status === 'PENDING') && !eventCache[fid]) {
+        const ev = await getEventById(fid);
+        if (ev) eventCache[fid] = ev;
       }
     }
 
-    const sorted = [...bets].reverse();
-    for (const b of sorted) {
-      const statusColor = b.status === 'WON' ? '#22c55e' : b.status === 'LOST' ? '#ef4444' : '#f59e0b';
-      const netLabel = b.netPoints !== null
-        ? `<span style="font-weight:bold;color:${b.netPoints >= 0 ? '#22c55e' : '#ef4444'};">${b.netPoints >= 0 ? '+' : ''}${b.netPoints.toFixed(1)} pts</span>`
-        : `<span style="color:#f59e0b;">Pending settlement</span>`;
+    // Sort fixture groups: pending first (by earliest tranche timestamp desc), then settled
+    const groups = Object.entries(byFixture).map(([fid, tranches]) => {
+      const first = tranches[0];
+      const totalStake = tranches.reduce((s, t) => s + t.stake, 0);
+      const totalNet = tranches.reduce((s, t) => s + (t.netPoints ?? 0), 0);
+      const hasPending = tranches.some(t => t.status === 'PENDING');
+      const status = hasPending ? 'PENDING' : (tranches.some(t => t.status === 'WON') ? 'WON' : 'LOST');
+      return { fid, tranches, first, totalStake, totalNet, status };
+    });
+    groups.sort((a, b) => (a.status === 'PENDING' ? -1 : 1) - (b.status === 'PENDING' ? -1 : 1));
 
-      const ev = eventCache[b.fixtureId];
-      const matchTitle = b.homeTeam && b.awayTeam
-        ? `${b.homeTeam} vs ${b.awayTeam}`
-        : b.leagueName;
+    for (const { fid, tranches, first, totalStake, totalNet, status } of groups) {
+      const statusColor = status === 'WON' ? '#22c55e' : status === 'LOST' ? '#ef4444' : '#f59e0b';
+      const matchTitle = first.homeTeam && first.awayTeam
+        ? `${first.homeTeam} vs ${first.awayTeam}`
+        : first.leagueName;
+      const selectionMap = { Home: `${first.homeTeam} wins`, Draw: 'Draw', Away: `${first.awayTeam} wins` };
+      const selLabel = selectionMap[first.selection] || first.selection;
+      const ev = eventCache[fid];
       const kickoffLine = ev
         ? `<div style="font-size:11px;color:#6b7280;margin-top:1px;">${moment(ev.commence_time).tz(TIMEZONE).format('DD MMM, HH:mm')} IST</div>`
         : '';
+      const netLabel = status !== 'PENDING'
+        ? `<span style="font-weight:bold;color:${totalNet >= 0 ? '#22c55e' : '#ef4444'};">${totalNet >= 0 ? '+' : ''}${totalNet.toFixed(1)} pts</span>`
+        : `<span style="color:#f59e0b;">Pending settlement</span>`;
 
-      const selectionMap = { Home: `${b.homeTeam} wins`, Draw: 'Draw', Away: `${b.awayTeam} wins` };
-      const selLabel = selectionMap[b.selection] || b.selection;
+      // Tranche breakdown rows
+      const trancheRows = tranches.map((t, i) => `
+        <tr style="border-top:1px solid #1f2937;">
+          <td style="padding:3px 0;color:#9ca3af;">#${i + 1}</td>
+          <td style="padding:3px 4px;text-align:right;color:#a78bfa;">${t.stake} pts</td>
+          <td style="padding:3px 0;text-align:right;color:#22c55e;">${t.lockedOdds}x</td>
+        </tr>`).join('');
 
       const cardInner = `
         <div style="display:flex;justify-content:space-between;align-items:flex-start;">
           <div>
             <div style="font-size:14px;font-weight:700;color:#e5e7eb;">${matchTitle}</div>
-            <div style="font-size:11px;color:#6b7280;margin-top:1px;">${b.leagueName}</div>
+            <div style="font-size:11px;color:#6b7280;margin-top:1px;">${first.leagueName}</div>
             ${kickoffLine}
           </div>
-          <span style="font-size:11px;font-weight:bold;color:${statusColor};border:1px solid ${statusColor};border-radius:4px;padding:2px 6px;white-space:nowrap;margin-left:8px;">${b.status}</span>
+          <span style="font-size:11px;font-weight:bold;color:${statusColor};border:1px solid ${statusColor};border-radius:4px;padding:2px 6px;white-space:nowrap;margin-left:8px;">${status}</span>
         </div>
         <div style="font-size:12px;color:#9ca3af;margin-top:8px;">
-          Pick: <strong style="color:#e5e7eb;">${selLabel}</strong> @ ${b.lockedOdds} &nbsp;·&nbsp; Stake: ${b.stake} pts
+          Pick: <strong style="color:#e5e7eb;">${selLabel}</strong> &nbsp;·&nbsp; Total staked: <strong style="color:#a78bfa;">${totalStake} pts</strong>
         </div>
-        ${b.result ? `<div style="font-size:12px;color:#9ca3af;margin-top:2px;">Result: <strong style="color:#e5e7eb;">${b.result}</strong></div>` : ''}
+        <table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:6px;">
+          <thead><tr style="color:#6b7280;">
+            <th style="text-align:left;padding:2px 0;">Tranche</th>
+            <th style="text-align:right;padding:2px 4px;">Stake</th>
+            <th style="text-align:right;padding:2px 0;">Odds</th>
+          </tr></thead>
+          <tbody>${trancheRows}</tbody>
+        </table>
+        ${first.result ? `<div style="font-size:12px;color:#9ca3af;margin-top:6px;">Result: <strong style="color:#e5e7eb;">${first.result}</strong></div>` : ''}
         <div style="font-size:13px;margin-top:6px;">${netLabel}</div>
-        ${b.status === 'PENDING' ? `<div style="font-size:11px;color:#6b7280;margin-top:6px;">Tap to see all predictions →</div>` : ''}
+        ${status === 'PENDING' ? `<div style="font-size:11px;color:#6b7280;margin-top:6px;">Tap to add another tranche →</div>` : ''}
       `;
 
-      if (b.status === 'PENDING') {
-        html += `<a href="/match?id=${b.fixtureId}" style="display:block;text-decoration:none;color:inherit;">
+      if (status === 'PENDING') {
+        html += `<a href="/match?id=${fid}" style="display:block;text-decoration:none;color:inherit;">
           <div class="card" style="border-color:#374151;">${cardInner}</div>
         </a>`;
       } else {
