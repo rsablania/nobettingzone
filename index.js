@@ -152,24 +152,6 @@ setInterval(async () => {
   }
 }, 60 * 1000);
 
-// Settlement-only pass every 2 hours (runs at :00 of every even hour IST)
-// Safe to run frequently — only touches PENDING bets, already-settled bets are ignored.
-setInterval(async () => {
-  try {
-    const now = moment().tz(TIMEZONE);
-    const h = now.hour();
-    if (h === 23) return;                   // 11 PM handled by the full daily job
-    if (h % 2 !== 0 || now.minute() !== 0) return; // only at top of even hours
-    const key = `settlementPass:${now.format('YYYY-MM-DD-HH')}`;
-    if (await db.get(key)) return;          // already ran this slot
-    await db.set(key, true);
-    console.log(`[SettlementPass] Running at ${now.format('HH:mm z')}…`);
-    const result = await settlePendingBets();
-    console.log(`[SettlementPass] Done — settled ${result.settled} bets`);
-  } catch (e) {
-    console.error('[SettlementPass] Error:', e.message);
-  }
-}, 60 * 1000);
 
 // Leaderboard email at 11:59 PM IST daily
 async function sendLeaderboardEmail() {
