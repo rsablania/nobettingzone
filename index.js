@@ -965,6 +965,55 @@ app.post('/admin/run-job', async (req, res) => {
   res.send(html);
 });
 
+// ADMIN – OTP lookup page
+app.get('/admin/otps', async (req, res) => {
+  const { password } = req.query;
+  const adminPassword = await getAdminPassword();
+
+  let html = htmlHeader('Pending OTPs - Admin');
+  html += `<h2>Pending OTPs</h2>`;
+
+  if (password !== adminPassword) {
+    html += `
+      <form method="GET" action="/admin/otps">
+        <input type="password" name="password" placeholder="Admin password" required
+          style="width:100%;max-width:280px;margin-bottom:8px;">
+        <br><button type="submit" style="background:#7c3aed;border-color:#7c3aed;">View OTPs</button>
+      </form>`;
+    html += htmlFooter('settle');
+    return res.send(html);
+  }
+
+  const now = Date.now();
+  const keys = await db.list('otp:');
+  const rows = [];
+  for (const key of keys) {
+    const entry = await db.get(key);
+    if (!entry) continue;
+    const minsLeft = Math.round((entry.expiresAt - now) / 60000);
+    if (minsLeft <= 0) continue; // already expired
+    rows.push({ email: entry.email, userId: entry.userId, otp: entry.otp, minsLeft });
+  }
+
+  if (!rows.length) {
+    html += `<p style="color:#9ca3af;">No pending OTPs right now.</p>`;
+  } else {
+    html += `<p style="font-size:13px;color:#9ca3af;margin-bottom:12px;">Share the OTP directly with the user. It expires in the minutes shown.</p>`;
+    for (const r of rows) {
+      html += `
+        <div class="card">
+          <div style="font-size:13px;color:#9ca3af;">${r.email} &nbsp;·&nbsp; <strong style="color:#e5e7eb;">@${r.userId}</strong></div>
+          <div style="font-size:28px;font-weight:700;letter-spacing:8px;margin:8px 0;color:#22c55e;">${r.otp}</div>
+          <div style="font-size:12px;color:#f59e0b;">Expires in ${r.minsLeft} min</div>
+        </div>`;
+    }
+  }
+
+  html += `<p style="margin-top:16px;font-size:12px;"><a href="/admin/otps?password=${encodeURIComponent(password)}">↻ Refresh</a> &nbsp;·&nbsp; <a href="/settle">Back to settle</a></p>`;
+  html += htmlFooter('settle');
+  res.send(html);
+});
+
 // ADMIN – change admin password
 app.post('/admin/change-password', async (req, res) => {
   const { oldPassword, newPassword } = req.body || {};
