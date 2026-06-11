@@ -133,6 +133,69 @@ setInterval(async () => {
   }
 }, 60 * 1000);
 
+// Leaderboard email at 11:59 PM IST daily
+async function sendLeaderboardEmail() {
+  try {
+    const keys = await db.list('user:');
+    const users = [];
+    for (const key of keys) {
+      const u = await db.get(key);
+      if (u) users.push(u);
+    }
+    users.sort((a, b) => b.totalNetPoints - a.totalNetPoints);
+    if (!users.length) return;
+
+    const rows = users.map((u, i) => {
+      const name = u.displayName || u.userId || 'Unknown';
+      const pts = (u.totalNetPoints || 0).toFixed(1);
+      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`;
+      return `<tr style="border-bottom:1px solid #e5e7eb;">
+        <td style="padding:8px 12px;">${medal}</td>
+        <td style="padding:8px 12px;">${name}</td>
+        <td style="padding:8px 12px;text-align:right;font-weight:bold;">${pts}</td>
+      </tr>`;
+    }).join('');
+
+    const date = moment().tz(TIMEZONE).format('DD MMM YYYY');
+    await resend.emails.send({
+      from: 'No Betting Zone <onboarding@resend.dev>',
+      to: 'gletterdash@gmail.com',
+      subject: `Leaderboard Update — ${date}`,
+      html: `
+        <h2 style="font-family:sans-serif;">🏆 No Betting Zone — Daily Leaderboard</h2>
+        <p style="font-family:sans-serif;color:#6b7280;">${date}</p>
+        <table style="border-collapse:collapse;font-family:sans-serif;width:100%;max-width:400px;">
+          <thead>
+            <tr style="background:#f3f4f6;">
+              <th style="padding:8px 12px;text-align:left;">Rank</th>
+              <th style="padding:8px 12px;text-align:left;">Player</th>
+              <th style="padding:8px 12px;text-align:right;">Points</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `
+    });
+    console.log('[LeaderboardEmail] Sent successfully for', date);
+  } catch (e) {
+    console.error('[LeaderboardEmail] Error:', e.message);
+  }
+}
+
+setInterval(async () => {
+  try {
+    const now = moment().tz(TIMEZONE);
+    if (now.hour() !== 23 || now.minute() !== 59) return;          // only at 11:59 PM IST
+    const today = now.format('YYYY-MM-DD');
+    const lastSent = await db.get('leaderboardEmail:lastSent');
+    if (lastSent === today) return;                                  // already sent today
+    await db.set('leaderboardEmail:lastSent', today);
+    await sendLeaderboardEmail();
+  } catch (e) {
+    console.error('[LeaderboardEmail Scheduler] Error:', e.message);
+  }
+}, 60 * 1000);
+
 // Extract h2h odds from an event → [{ value:'Home'|'Draw'|'Away', odd:'1.90' }]
 function extractOdds(event) {
   if (!event?.bookmakers?.length) return null;
