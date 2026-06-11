@@ -324,7 +324,7 @@ function htmlFooter(active) {
       <a href="/summary" class="${active === 'summary' ? 'active' : ''}">My Stats</a>
       <a href="/leaderboard" class="${active === 'leaders' ? 'active' : ''}">Leaders</a>
       <a href="/forum" class="${active === 'forum' ? 'active' : ''}">Forum</a>
-      <a href="/settle" class="${active === 'settle' ? 'active' : ''}">Settle</a>
+      <a href="/admin" class="${active === 'admin' ? 'active' : ''}">Admin</a>
     </div>
   </body>
   </html>
@@ -869,75 +869,120 @@ app.get('/summary', requireAuth, async (req, res) => {
   res.send(html);
 });
 
-// SCHEDULE STATUS – shows when the daily job last ran and next run time
-app.get('/settle', async (req, res) => {
-  const lastRun = await db.get('dailyJob:lastRun') || 'Never';
+// SETTLE – redirect to admin
+app.get('/settle', (req, res) => res.redirect('/admin'));
+
+// ADMIN – unified admin panel
+app.get('/admin', async (req, res) => {
+  const lastRun = (await db.get('dailyJob:lastRun')) || 'Never';
   const allBets = await getBets();
   const pending = allBets.filter(b => b.status === 'PENDING').length;
   const won = allBets.filter(b => b.status === 'WON').length;
   const lost = allBets.filter(b => b.status === 'LOST').length;
 
-  let html = htmlHeader('Schedule - No Betting Zone');
+  let html = htmlHeader('Admin - No Betting Zone');
+  html += `<h2>Admin</h2>`;
+
+  // Status cards — always visible
   html += `
-    <h2>Daily Schedule</h2>
-    <div class="card">
-      <div style="font-size:13px;color:#9ca3af;margin-bottom:8px;">Every night at 11:00 PM IST the app:</div>
-      <ol style="font-size:13px;margin:0;padding-left:18px;line-height:2;">
-        <li>Settles results for finished matches</li>
-        <li>Fetches fresh fixtures &amp; odds for the next days</li>
-      </ol>
-    </div>
     <div class="card">
       <div style="font-size:13px;">Last job ran: <strong>${lastRun}</strong></div>
-      <div style="font-size:13px;margin-top:4px;">Fixture snapshot: <strong>${snapshotMeta ? snapshotMeta.fetchedAt : 'Not yet fetched'}</strong></div>
-      ${snapshotMeta ? `<div style="font-size:12px;color:#6b7280;margin-top:2px;">Credits left after last fetch: ${snapshotMeta.creditsLeft}</div>` : ''}
+      <div style="font-size:13px;margin-top:4px;">Snapshot: <strong>${snapshotMeta ? snapshotMeta.fetchedAt : 'Not yet fetched'}</strong></div>
+      ${snapshotMeta ? `<div style="font-size:12px;color:#6b7280;margin-top:2px;">Credits left: ${snapshotMeta.creditsLeft}</div>` : ''}
     </div>
     <div class="card">
       <div style="font-size:13px;">Pending bets: <strong>${pending}</strong></div>
-      <div style="font-size:13px;margin-top:4px;">Settled — Won: <strong style="color:#22c55e;">${won}</strong> / Lost: <strong style="color:#ef4444;">${lost}</strong></div>
+      <div style="font-size:13px;margin-top:4px;">Won: <strong style="color:#22c55e;">${won}</strong> / Lost: <strong style="color:#ef4444;">${lost}</strong></div>
     </div>
-    <p style="font-size:12px;color:#6b7280;">No API calls are made when you use the app — all data is from the nightly snapshot.</p>
-    <p><a href="/">Back to home</a> • <a href="/leaderboard">View leaderboard</a></p>
     <hr style="border-color:#1f2937;margin:16px 0;">
-    <h3 style="font-size:14px;color:#9ca3af;">Manual trigger</h3>
-    <form method="POST" action="/admin/run-job">
-      <input type="password" name="password" placeholder="Admin password" required autocomplete="current-password"
-        style="width:100%;max-width:280px;margin-bottom:8px;">
-      <br>
-      <button type="submit" style="background:#7c3aed;border-color:#7c3aed;">Run daily job now</button>
-    </form>
-    <p style="font-size:11px;color:#6b7280;margin-top:8px;">This settles pending bets and fetches a fresh fixture snapshot immediately, regardless of the time.</p>
-
-    <hr style="border-color:#1f2937;margin:16px 0;">
-    <h3 style="font-size:14px;color:#9ca3af;">Change admin password</h3>
-    ${req.query.pwMsg ? `<p style="font-size:13px;color:${req.query.pwMsg === 'ok' ? '#22c55e' : '#ef4444'};">${req.query.pwMsg === 'ok' ? 'Password changed successfully.' : req.query.pwMsg}</p>` : ''}
-    <form method="POST" action="/admin/change-password">
-      <input type="password" name="oldPassword" placeholder="Current password" required autocomplete="current-password"
-        style="width:100%;max-width:280px;margin-bottom:8px;">
-      <br>
-      <input type="password" name="newPassword" placeholder="New password (min 6 chars)" required autocomplete="new-password"
-        style="width:100%;max-width:280px;margin-bottom:8px;">
-      <br>
-      <button type="submit" style="background:#374151;border-color:#374151;">Change password</button>
-    </form>
   `;
-  html += htmlFooter('settle');
+
+  if (!req.session.isAdmin) {
+    const err = req.query.err || '';
+    html += `
+      ${err ? `<p style="font-size:13px;color:#ef4444;">${err}</p>` : ''}
+      <p style="font-size:13px;color:#9ca3af;margin-bottom:12px;">Enter admin password to unlock tools.</p>
+      <form method="POST" action="/admin/login">
+        <input type="password" name="password" placeholder="Admin password" required autocomplete="current-password"
+          style="width:100%;max-width:280px;margin-bottom:8px;">
+        <br><button type="submit" style="background:#7c3aed;border-color:#7c3aed;">Unlock Admin</button>
+      </form>
+    `;
+  } else {
+    const pwMsg = req.query.pwMsg || '';
+
+    // Fetch pending OTPs
+    const now = Date.now();
+    const otpKeys = await db.list('otp:');
+    const otpRows = [];
+    for (const key of otpKeys) {
+      const entry = await db.get(key);
+      if (!entry) continue;
+      const minsLeft = Math.round((entry.expiresAt - now) / 60000);
+      if (minsLeft <= 0) continue;
+      otpRows.push({ email: entry.email, userId: entry.userId, otp: entry.otp, minsLeft });
+    }
+
+    html += `
+      <h3 style="font-size:14px;color:#9ca3af;margin-top:0;">Run daily job</h3>
+      <form method="POST" action="/admin/run-job">
+        <button type="submit" style="background:#7c3aed;border-color:#7c3aed;">Run daily job now</button>
+      </form>
+      <p style="font-size:11px;color:#6b7280;margin-top:8px;">Settles pending bets and fetches a fresh fixture snapshot immediately.</p>
+
+      <hr style="border-color:#1f2937;margin:16px 0;">
+      <h3 style="font-size:14px;color:#9ca3af;">Pending OTPs</h3>
+      ${otpRows.length === 0
+        ? `<p style="color:#9ca3af;font-size:13px;">No pending OTPs right now.</p>`
+        : `<p style="font-size:12px;color:#9ca3af;margin-bottom:8px;">Share these codes with users who are trying to register.</p>
+           ${otpRows.map(r => `
+             <div class="card">
+               <div style="font-size:13px;color:#9ca3af;">${r.email} &nbsp;·&nbsp; <strong style="color:#e5e7eb;">@${r.userId}</strong></div>
+               <div style="font-size:28px;font-weight:700;letter-spacing:8px;margin:8px 0;color:#22c55e;">${r.otp}</div>
+               <div style="font-size:12px;color:#f59e0b;">Expires in ${r.minsLeft} min</div>
+             </div>`).join('')}`
+      }
+      <p style="font-size:12px;"><a href="/admin">↻ Refresh</a></p>
+
+      <hr style="border-color:#1f2937;margin:16px 0;">
+      <h3 style="font-size:14px;color:#9ca3af;">Change admin password</h3>
+      ${pwMsg ? `<p style="font-size:13px;color:${pwMsg === 'ok' ? '#22c55e' : '#ef4444'};">${pwMsg === 'ok' ? 'Password changed.' : pwMsg}</p>` : ''}
+      <form method="POST" action="/admin/change-password">
+        <input type="password" name="oldPassword" placeholder="Current password" required autocomplete="current-password"
+          style="width:100%;max-width:280px;margin-bottom:8px;">
+        <br>
+        <input type="password" name="newPassword" placeholder="New password (min 6 chars)" required autocomplete="new-password"
+          style="width:100%;max-width:280px;margin-bottom:8px;">
+        <br>
+        <button type="submit" style="background:#374151;border-color:#374151;">Change password</button>
+      </form>
+
+      <p style="margin-top:24px;font-size:12px;"><a href="/admin/logout-admin" style="color:#6b7280;">🔒 Lock admin panel</a></p>
+    `;
+  }
+
+  html += htmlFooter('admin');
   res.send(html);
 });
 
-// ADMIN – manual daily job trigger (password-gated)
-app.post('/admin/run-job', async (req, res) => {
+// ADMIN – login (set session)
+app.post('/admin/login', async (req, res) => {
   const { password } = req.body || {};
   const adminPassword = await getAdminPassword();
-  if (password !== adminPassword) {
-    return res.status(403).send(`
-      <html><body style="background:#020617;color:#e5e7eb;font-family:system-ui;padding:24px;">
-        <h2>No Betting Zone</h2>
-        <p style="color:#ef4444;">Wrong password.</p>
-        <p><a href="/settle" style="color:#22c55e;">Back to schedule</a></p>
-      </body></html>
-    `);
-  }
+  if (password !== adminPassword) return res.redirect('/admin?err=Wrong+password.');
+  req.session.isAdmin = true;
+  res.redirect('/admin');
+});
+
+// ADMIN – lock (clear session)
+app.get('/admin/logout-admin', (req, res) => {
+  req.session.isAdmin = false;
+  res.redirect('/admin');
+});
+
+// ADMIN – manual daily job trigger (session-gated)
+app.post('/admin/run-job', async (req, res) => {
+  if (!req.session.isAdmin) return res.redirect('/admin');
 
   let settleResult, fetchResult;
   try { settleResult = await settlePendingBets(); } catch (e) { settleResult = { error: e.message }; }
@@ -959,72 +1004,24 @@ app.post('/admin/run-job', async (req, res) => {
       <div style="font-size:13px;">Fixture fetch: <strong style="color:${fetchResult === 'OK' ? '#22c55e' : '#ef4444'};">${fetchResult}</strong></div>
       ${snapshotMeta ? `<div style="font-size:12px;color:#6b7280;margin-top:4px;">Snapshot updated: ${snapshotMeta.fetchedAt} • Credits left: ${snapshotMeta.creditsLeft}</div>` : ''}
     </div>
-    <p><a href="/">View fixtures</a> • <a href="/settle">Back to schedule</a></p>
+    <p><a href="/">View fixtures</a> • <a href="/admin">Back to admin</a></p>
   `;
-  html += htmlFooter('settle');
-  res.send(html);
-});
-
-// ADMIN – OTP lookup page
-app.get('/admin/otps', async (req, res) => {
-  const { password } = req.query;
-  const adminPassword = await getAdminPassword();
-
-  let html = htmlHeader('Pending OTPs - Admin');
-  html += `<h2>Pending OTPs</h2>`;
-
-  if (password !== adminPassword) {
-    html += `
-      <form method="GET" action="/admin/otps">
-        <input type="password" name="password" placeholder="Admin password" required
-          style="width:100%;max-width:280px;margin-bottom:8px;">
-        <br><button type="submit" style="background:#7c3aed;border-color:#7c3aed;">View OTPs</button>
-      </form>`;
-    html += htmlFooter('settle');
-    return res.send(html);
-  }
-
-  const now = Date.now();
-  const keys = await db.list('otp:');
-  const rows = [];
-  for (const key of keys) {
-    const entry = await db.get(key);
-    if (!entry) continue;
-    const minsLeft = Math.round((entry.expiresAt - now) / 60000);
-    if (minsLeft <= 0) continue; // already expired
-    rows.push({ email: entry.email, userId: entry.userId, otp: entry.otp, minsLeft });
-  }
-
-  if (!rows.length) {
-    html += `<p style="color:#9ca3af;">No pending OTPs right now.</p>`;
-  } else {
-    html += `<p style="font-size:13px;color:#9ca3af;margin-bottom:12px;">Share the OTP directly with the user. It expires in the minutes shown.</p>`;
-    for (const r of rows) {
-      html += `
-        <div class="card">
-          <div style="font-size:13px;color:#9ca3af;">${r.email} &nbsp;·&nbsp; <strong style="color:#e5e7eb;">@${r.userId}</strong></div>
-          <div style="font-size:28px;font-weight:700;letter-spacing:8px;margin:8px 0;color:#22c55e;">${r.otp}</div>
-          <div style="font-size:12px;color:#f59e0b;">Expires in ${r.minsLeft} min</div>
-        </div>`;
-    }
-  }
-
-  html += `<p style="margin-top:16px;font-size:12px;"><a href="/admin/otps?password=${encodeURIComponent(password)}">↻ Refresh</a> &nbsp;·&nbsp; <a href="/settle">Back to settle</a></p>`;
-  html += htmlFooter('settle');
+  html += htmlFooter('admin');
   res.send(html);
 });
 
 // ADMIN – change admin password
 app.post('/admin/change-password', async (req, res) => {
+  if (!req.session.isAdmin) return res.redirect('/admin');
   const { oldPassword, newPassword } = req.body || {};
-  if (!oldPassword || !newPassword) return res.redirect('/settle?pwMsg=All+fields+are+required.');
-  if (newPassword.length < 6) return res.redirect('/settle?pwMsg=New+password+must+be+at+least+6+characters.');
+  if (!oldPassword || !newPassword) return res.redirect('/admin?pwMsg=All+fields+are+required.');
+  if (newPassword.length < 6) return res.redirect('/admin?pwMsg=New+password+must+be+at+least+6+characters.');
 
   const adminPassword = await getAdminPassword();
-  if (oldPassword !== adminPassword) return res.redirect('/settle?pwMsg=Current+password+is+incorrect.');
+  if (oldPassword !== adminPassword) return res.redirect('/admin?pwMsg=Current+password+is+incorrect.');
 
   await db.set('admin:password', newPassword);
-  res.redirect('/settle?pwMsg=ok');
+  res.redirect('/admin?pwMsg=ok');
 });
 
 // LEADERBOARD
