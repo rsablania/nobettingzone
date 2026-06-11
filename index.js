@@ -18,12 +18,31 @@ const TIMEZONE = 'Asia/Kolkata';
 
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
+// Persistent session store backed by @replit/database
+// Prevents logout when the container sleeps/restarts
+const SessionStore = session.Store;
+class ReplitDbSessionStore extends SessionStore {
+  async get(sid, cb) {
+    try { cb(null, (await db.get(`sess:${sid}`)) || null); }
+    catch (e) { cb(e); }
+  }
+  async set(sid, sess, cb) {
+    try { await db.set(`sess:${sid}`, sess); cb(null); }
+    catch (e) { cb(e); }
+  }
+  async destroy(sid, cb) {
+    try { await db.delete(`sess:${sid}`); cb(null); }
+    catch (e) { cb(e); }
+  }
+}
+
 app.use(session({
   secret: process.env.SESSION_SECRET || 'dev-secret',
   resave: false,
   saveUninitialized: false,
   rolling: true,
-  cookie: { maxAge: 7 * 24 * 60 * 60 * 1000 }      // 7 days, renewed on each visit
+  store: new ReplitDbSessionStore(),
+  cookie: { maxAge: 30 * 24 * 60 * 60 * 1000 }   // 30 days, survives container restarts
 }));
 
 // All soccer sport keys on The Odds API free plan
@@ -614,7 +633,7 @@ app.get('/logout', (req, res) => {
 /* ---------------- ROUTES ---------------- */
 
 // HOME / DASHBOARD – reads from in-memory snapshot only, no API calls
-app.get('/', async (req, res) => {
+app.get('/', requireAuth, async (req, res) => {
   try {
     const now = new Date();
     const cutoff = 10 * 60 * 1000; // 10 min in ms
@@ -1307,7 +1326,7 @@ app.post('/admin/send-settlement-logs', async (req, res) => {
 });
 
 // LEADERBOARD
-app.get('/leaderboard', async (req, res) => {
+app.get('/leaderboard', requireAuth, async (req, res) => {
   const keys = await db.list('user:');
   const users = [];
   for (const key of keys) {
@@ -1354,7 +1373,7 @@ app.get('/leaderboard', async (req, res) => {
 });
 
 // FORUM – chat with emojis (from keyboard) and @Name in text
-app.get('/forum', async (req, res) => {
+app.get('/forum', requireAuth, async (req, res) => {
   const messages = await getMessages();
   const sessionUserId = req.session.userId;
 
