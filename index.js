@@ -1015,6 +1015,10 @@ app.get('/settle', (req, res) => res.redirect('/admin'));
 
 // ADMIN – unified admin panel
 app.get('/admin', async (req, res) => {
+  // Consume one-time unlock flag — every fresh page visit requires the password
+  req.session.isAdmin = req.session.isAdminUnlocked || false;
+  delete req.session.isAdminUnlocked;
+
   const lastRun = (await db.get('dailyJob:lastRun')) || 'Never';
   const allBets = await getBets();
   const settlementLogKeys = await db.list('settlementLog:');
@@ -1120,7 +1124,7 @@ app.get('/admin', async (req, res) => {
           <p style="font-size:11px;color:#6b7280;margin-top:6px;">All match breakdowns + current leaderboard → gletterdash@gmail.com</p>`;
       })()}
 
-      <p style="margin-top:24px;font-size:12px;"><a href="/admin/logout-admin" style="color:#6b7280;">🔒 Lock admin panel</a></p>
+      <p style="margin-top:24px;font-size:12px;color:#6b7280;">🔒 Admin panel locks automatically on next visit.</p>
     `;
   }
 
@@ -1133,7 +1137,7 @@ app.post('/admin/login', async (req, res) => {
   const { password } = req.body || {};
   const adminPassword = await getAdminPassword();
   if (password !== adminPassword) return res.redirect('/admin?err=Wrong+password.');
-  req.session.isAdmin = true;
+  req.session.isAdminUnlocked = true;  // one-time flag, consumed on next GET /admin
   res.redirect('/admin');
 });
 
