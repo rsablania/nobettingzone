@@ -1639,8 +1639,11 @@ app.get('/admin', async (req, res) => {
         for (const b of allBets.filter(b => b.status === 'PENDING')) {
           if (!seen.has(b.fixtureId)) {
             seen.add(b.fixtureId);
-            const label = b.homeTeam && b.awayTeam ? `${b.homeTeam} vs ${b.awayTeam}` : b.fixtureId;
-            pendingFixtures.push({ id: b.fixtureId, label });
+            const matchName = b.homeTeam && b.awayTeam ? `${b.homeTeam} vs ${b.awayTeam}` : b.fixtureId;
+            const dateStr = b.commenceTime
+              ? moment(b.commenceTime).tz(TIMEZONE).format('DD MMM, HH:mm')
+              : '?';
+            pendingFixtures.push({ id: b.fixtureId, label: `${matchName} — ${dateStr} IST` });
           }
         }
 
