@@ -185,24 +185,6 @@ setInterval(async () => {
   }
 }, 60 * 1000);
 
-// Settlement every 30 mins (runs at :00 and :30 of every hour except 11 PM)
-setInterval(async () => {
-  try {
-    const now = moment().tz(TIMEZONE);
-    const h = now.hour();
-    const m = now.minute();
-    if (h === 23) return;                         // 11 PM handled by full daily job
-    if (m !== 0 && m !== 30) return;
-    const key = `settlementPass:${now.format('YYYY-MM-DD-HH-mm')}`;
-    if (await db.get(key)) return;
-    await db.set(key, true);
-    console.log(`[SettlementPass] Running at ${now.format('HH:mm z')}…`);
-    const result = await settlePendingBets();
-    console.log(`[SettlementPass] Done — settled ${result.settled} bet(s)`);
-  } catch (e) {
-    console.error('[SettlementPass] Error:', e.message);
-  }
-}, 60 * 1000);
 
 // Leaderboard email at 11:59 PM IST daily
 async function sendLeaderboardEmail() {
@@ -1406,7 +1388,7 @@ app.get('/rules', requireAuth, (req, res) => {
     <div class="card" style="margin-bottom:12px;">
       <div style="font-size:13px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">Settlement Timing</div>
       <ul style="margin:0;padding-left:18px;font-size:14px;line-height:1.8;color:#d1d5db;">
-        <li>Odds are refreshed every <strong style="color:#e5e7eb;">2 hours</strong>. Results are checked and settled every <strong style="color:#e5e7eb;">30 minutes</strong>. A full sweep also runs daily at <strong style="color:#e5e7eb;">11 PM IST</strong>.</li>
+        <li>Odds are refreshed every <strong style="color:#e5e7eb;">2 hours</strong>. Results are checked and settled once daily at <strong style="color:#e5e7eb;">11 PM IST</strong>.</li>
         <li>Bets are settled as soon as the result is confirmed by the data source.</li>
         <li>Settled results appear on the <a href="/results" style="color:#22c55e;">Results</a> page and your <a href="/summary" style="color:#22c55e;">My Stats</a> page.</li>
       </ul>
