@@ -116,6 +116,7 @@ async function runDailyJob() {
   try { await fetchAndStoreFixtures(); } catch (e) { console.error('[DailyJob] Fetch error:', e.message); }
   const today = moment().tz(TIMEZONE).format('YYYY-MM-DD');
   await db.set('dailyJob:lastRun', today);
+  await db.set('dailyJob:scheduledRun', today); // separate key — only set by the scheduler
   console.log('[DailyJob] Done for', today);
 }
 
@@ -124,8 +125,8 @@ setInterval(async () => {
     const now = moment().tz(TIMEZONE);
     if (now.hour() !== 23) return;                                  // only run during 11 PM IST hour
     const today = now.format('YYYY-MM-DD');
-    const lastRun = await db.get('dailyJob:lastRun');
-    if (lastRun === today) return;                                   // already ran today
+    const lastScheduled = await db.get('dailyJob:scheduledRun');   // not affected by manual admin runs
+    if (lastScheduled === today) return;
     await runDailyJob();
   } catch (e) {
     console.error('[Scheduler] Error:', e.message);
