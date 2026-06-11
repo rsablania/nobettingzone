@@ -2,6 +2,10 @@ const express = require('express');
 const axios = require('axios');
 const moment = require('moment-timezone');
 const Database = require('@replit/database');
+const session = require('express-session');
+const bcrypt = require('bcryptjs');
+const { Resend } = require('resend');
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 const db = new Database();
 const app = express();
@@ -14,6 +18,12 @@ const TIMEZONE = 'Asia/Kolkata';
 
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'dev-secret',
+  resave: false,
+  saveUninitialized: false,
+  cookie: { maxAge: 7 * 24 * 60 * 60 * 1000 }
+}));
 
 // All soccer sport keys on The Odds API free plan
 const SOCCER_SPORT_KEYS = [
@@ -153,20 +163,38 @@ function getResultFromScore(scoreEvent) {
 
 /* ---------------- REPLIT DB HELPERS ---------------- */
 
-// Get or create user by name (no login system for now)
-async function getUser(name) {
-  const key = `user:${name.toLowerCase()}`;
-  let user = await db.get(key);
-  if (!user) {
-    user = { name, totalNetPoints: 0 };
-    await db.set(key, user);
-  }
-  return user;
+async function getUserById(userId) {
+  return db.get(`user:${userId.toLowerCase()}`);
+}
+
+async function getUserByEmail(email) {
+  const userId = await db.get(`email:${email.toLowerCase()}`);
+  if (!userId) return null;
+  return getUserById(userId);
 }
 
 async function saveUser(user) {
-  const key = `user:${user.name.toLowerCase()}`;
-  await db.set(key, user);
+  await db.set(`user:${user.userId.toLowerCase()}`, user);
+}
+
+async function createUser(userId, email, passwordHash) {
+  const user = {
+    userId,
+    email,
+    displayName: userId,
+    passwordHash,
+    verified: true,
+    totalNetPoints: 0,
+    createdAt: new Date().toISOString(),
+  };
+  await db.set(`user:${userId.toLowerCase()}`, user);
+  await db.set(`email:${email.toLowerCase()}`, userId);
+  return user;
+}
+
+function requireAuth(req, res, next) {
+  if (!req.session.userId) return res.redirect('/login');
+  next();
 }
 
 async function addBet(bet) {
@@ -238,9 +266,11 @@ async function settlePendingBets() {
     summary.settled++;
 
     try {
-      const user = await getUser(bet.user);
-      user.totalNetPoints = Math.round((user.totalNetPoints + bet.netPoints) * 10) / 10;
-      await saveUser(user);
+      const user = await getUserById(bet.user);
+      if (user) {
+        user.totalNetPoints = Math.round((user.totalNetPoints + bet.netPoints) * 10) / 10;
+        await saveUser(user);
+      }
     } catch (e) {
       summary.errors.push(`User update error for ${bet.user}: ${e.message}`);
     }
@@ -295,6 +325,160 @@ function htmlFooter(active) {
   `;
 }
 
+/* ---------------- AUTH ROUTES ---------------- */
+
+// REGISTER – step 1: collect details, send OTP
+app.get('/register', (req, res) => {
+  if (req.session.userId) return res.redirect('/');
+  const err = req.query.error || '';
+  let html = htmlHeader('Register - No Betting Zone');
+  html += `
+    <h2>Create Account</h2>
+    ${err ? `<p style="color:#ef4444;font-size:13px;">${err}</p>` : ''}
+    <form method="POST" action="/register">
+      <p style="margin-bottom:4px;font-size:13px;">Username</p>
+      <input name="userId" placeholder="e.g. Rahul07" required autocomplete="username"
+        style="width:100%;margin-bottom:12px;">
+      <p style="margin-bottom:4px;font-size:13px;">Email</p>
+      <input name="email" type="email" placeholder="you@example.com" required autocomplete="email"
+        style="width:100%;margin-bottom:12px;">
+      <p style="margin-bottom:4px;font-size:13px;">Password</p>
+      <input name="password" type="password" placeholder="Min 6 characters" required autocomplete="new-password"
+        style="width:100%;margin-bottom:16px;">
+      <button type="submit" style="width:100%;">Send OTP →</button>
+    </form>
+    <p style="font-size:13px;margin-top:16px;">Already have an account? <a href="/login">Log in</a></p>
+  `;
+  html += htmlFooter('');
+  res.send(html);
+});
+
+app.post('/register', async (req, res) => {
+  if (req.session.userId) return res.redirect('/');
+  const { userId, email, password } = req.body || {};
+
+  if (!userId || !email || !password) return res.redirect('/register?error=All+fields+are+required.');
+  if (userId.length < 3 || userId.length > 20) return res.redirect('/register?error=Username+must+be+3-20+characters.');
+  if (!/^[a-zA-Z0-9_]+$/.test(userId)) return res.redirect('/register?error=Username+can+only+contain+letters,+numbers,+and+underscores.');
+  if (password.length < 6) return res.redirect('/register?error=Password+must+be+at+least+6+characters.');
+
+  try {
+    const existingByUserId = await getUserById(userId);
+    if (existingByUserId) return res.redirect('/register?error=Username+already+taken.');
+    const existingByEmail = await getUserByEmail(email);
+    if (existingByEmail) return res.redirect('/register?error=Email+already+registered.');
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const passwordHash = await bcrypt.hash(password, 10);
+    await db.set(`otp:${email.toLowerCase()}`, {
+      otp, userId, email, passwordHash,
+      expiresAt: Date.now() + 15 * 60 * 1000
+    });
+
+    await resend.emails.send({
+      from: 'No Betting Zone <onboarding@resend.dev>',
+      to: email,
+      subject: 'Your OTP for No Betting Zone',
+      html: `<p>Hi ${userId},</p><p>Your one-time verification code is:</p><h2 style="letter-spacing:6px;">${otp}</h2><p>This code expires in 15 minutes.</p>`
+    });
+
+    res.redirect(`/verify-email?email=${encodeURIComponent(email)}`);
+  } catch (e) {
+    console.error('[Register]', e.message);
+    res.redirect('/register?error=Something+went+wrong.+Please+try+again.');
+  }
+});
+
+// VERIFY EMAIL – step 2: enter OTP
+app.get('/verify-email', (req, res) => {
+  const email = req.query.email || '';
+  const err = req.query.error || '';
+  let html = htmlHeader('Verify Email - No Betting Zone');
+  html += `
+    <h2>Verify Your Email</h2>
+    <p style="font-size:13px;color:#9ca3af;">We sent a 6-digit code to <strong style="color:#e5e7eb;">${email}</strong></p>
+    ${err ? `<p style="color:#ef4444;font-size:13px;">${err}</p>` : ''}
+    <form method="POST" action="/verify-email">
+      <input type="hidden" name="email" value="${email}">
+      <p style="margin-bottom:4px;font-size:13px;">Enter OTP</p>
+      <input name="otp" placeholder="6-digit code" required maxlength="6" autocomplete="one-time-code"
+        style="width:100%;margin-bottom:16px;letter-spacing:6px;font-size:20px;text-align:center;">
+      <button type="submit" style="width:100%;">Verify & Create Account</button>
+    </form>
+    <p style="font-size:13px;margin-top:12px;color:#6b7280;">
+      Didn't get it? <a href="/register">Start over</a>
+    </p>
+  `;
+  html += htmlFooter('');
+  res.send(html);
+});
+
+app.post('/verify-email', async (req, res) => {
+  const { email, otp } = req.body || {};
+  if (!email || !otp) return res.redirect('/register');
+
+  const pending = await db.get(`otp:${email.toLowerCase()}`);
+  if (!pending) return res.redirect(`/verify-email?email=${encodeURIComponent(email)}&error=OTP+expired.+Please+register+again.`);
+  if (Date.now() > pending.expiresAt) {
+    await db.delete(`otp:${email.toLowerCase()}`);
+    return res.redirect(`/verify-email?email=${encodeURIComponent(email)}&error=OTP+expired.+Please+register+again.`);
+  }
+  if (otp.trim() !== pending.otp) {
+    return res.redirect(`/verify-email?email=${encodeURIComponent(email)}&error=Incorrect+OTP.+Please+try+again.`);
+  }
+
+  await db.delete(`otp:${email.toLowerCase()}`);
+  const user = await createUser(pending.userId, pending.email, pending.passwordHash);
+  req.session.userId = user.userId;
+  req.session.displayName = user.displayName;
+  res.redirect('/');
+});
+
+// LOGIN
+app.get('/login', (req, res) => {
+  if (req.session.userId) return res.redirect('/');
+  const err = req.query.error || '';
+  let html = htmlHeader('Login - No Betting Zone');
+  html += `
+    <h2>Log In</h2>
+    ${err ? `<p style="color:#ef4444;font-size:13px;">${err}</p>` : ''}
+    <form method="POST" action="/login">
+      <p style="margin-bottom:4px;font-size:13px;">Email</p>
+      <input name="email" type="email" placeholder="you@example.com" required autocomplete="email"
+        style="width:100%;margin-bottom:12px;">
+      <p style="margin-bottom:4px;font-size:13px;">Password</p>
+      <input name="password" type="password" placeholder="Your password" required autocomplete="current-password"
+        style="width:100%;margin-bottom:16px;">
+      <button type="submit" style="width:100%;">Log In</button>
+    </form>
+    <p style="font-size:13px;margin-top:16px;">No account? <a href="/register">Register</a></p>
+  `;
+  html += htmlFooter('');
+  res.send(html);
+});
+
+app.post('/login', async (req, res) => {
+  const { email, password } = req.body || {};
+  if (!email || !password) return res.redirect('/login?error=Please+fill+in+all+fields.');
+  try {
+    const user = await getUserByEmail(email);
+    if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+      return res.redirect('/login?error=Invalid+email+or+password.');
+    }
+    req.session.userId = user.userId;
+    req.session.displayName = user.displayName;
+    res.redirect('/');
+  } catch (e) {
+    console.error('[Login]', e.message);
+    res.redirect('/login?error=Something+went+wrong.');
+  }
+});
+
+// LOGOUT
+app.get('/logout', (req, res) => {
+  req.session.destroy(() => res.redirect('/login'));
+});
+
 /* ---------------- ROUTES ---------------- */
 
 // HOME / DASHBOARD – reads from in-memory snapshot only, no API calls
@@ -316,18 +500,17 @@ app.get('/', async (req, res) => {
       ? `<p style="font-size:11px;color:#6b7280;margin-top:0;">Fixtures last updated: ${snapshotMeta.fetchedAt} • Next update: tonight at 11 PM IST</p>`
       : `<p style="font-size:11px;color:#f59e0b;">Fixtures not yet loaded — first update runs tonight at 11 PM IST.</p>`;
 
+    const sessionUserId = req.session.userId;
+    const userGreeting = sessionUserId
+      ? `<p style="font-size:13px;margin-bottom:12px;">👤 <strong>${sessionUserId}</strong> — <a href="/summary">My Stats</a> · <a href="/logout">Log out</a></p>`
+      : `<p style="font-size:13px;margin-bottom:12px;"><a href="/login">Log in</a> or <a href="/register">Register</a> to make predictions</p>`;
+
     let html = htmlHeader('No Betting Zone - Home');
     html += `
       <div class="title">No Betting Zone</div>
       <p style="font-size:14px;color:#9ca3af;">Points-based football prediction game. No real money.</p>
+      ${userGreeting}
       ${fetchInfo}
-
-      <p>Enter your name to track your predictions:</p>
-      <form method="GET" action="/me" style="margin-bottom:16px;">
-        <input name="name" placeholder="Your name" required style="width:60%;max-width:260px;">
-        <button type="submit">Go</button>
-      </form>
-
       <h3>Upcoming matches</h3>
     `;
 
@@ -372,17 +555,15 @@ app.get('/', async (req, res) => {
   }
 });
 
-// USER PAGE – see own bets
-app.get('/me', async (req, res) => {
-  const name = (req.query.name || '').toString().trim();
-  if (!name) return res.redirect('/');
+// USER PAGE – see own bets (session-based)
+app.get('/me', requireAuth, async (req, res) => {
+  const user = await getUserById(req.session.userId);
+  if (!user) return res.redirect('/login');
+  const bets = (await getBets()).filter(b => b.user === user.userId);
 
-  const user = await getUser(name);
-  const bets = (await getBets()).filter(b => b.user === user.name);
-
-  let html = htmlHeader(`${user.name} - No Betting Zone`);
+  let html = htmlHeader(`${user.displayName} - No Betting Zone`);
   html += `
-    <h2>Hello, ${user.name}</h2>
+    <h2>Hello, ${user.displayName}</h2>
     <p>Total points: ${user.totalNetPoints.toFixed(1)}</p>
     <h3>Your bets</h3>
   `;
@@ -418,7 +599,7 @@ app.get('/me', async (req, res) => {
 });
 
 // MATCH PAGE – single match view + 1X2 prediction
-app.get('/match', async (req, res) => {
+app.get('/match', requireAuth, async (req, res) => {
   const eventId = req.query.id;
   if (!eventId) return res.redirect('/');
 
@@ -448,9 +629,6 @@ app.get('/match', async (req, res) => {
       <form method="POST" action="/bet">
         <input type="hidden" name="eventId" value="${eventId}">
         <input type="hidden" name="leagueName" value="${leagueName}">
-        <p>Your name:</p>
-        <input name="name" placeholder="Your name" required style="width:100%;margin-bottom:8px;">
-
         <p>Pick result (1X2):</p>
     `;
 
@@ -482,13 +660,14 @@ app.get('/match', async (req, res) => {
 });
 
 // HANDLE BET – one prediction per user per event
-app.post('/bet', async (req, res) => {
-  const { name, eventId, selection, leagueName } = req.body || {};
-  if (!name || !eventId || !selection) {
+app.post('/bet', requireAuth, async (req, res) => {
+  const { eventId, selection, leagueName } = req.body || {};
+  if (!eventId || !selection) {
     return res.status(400).send('Missing fields');
   }
 
-  const user = await getUser(name.trim());
+  const user = await getUserById(req.session.userId);
+  if (!user) return res.redirect('/login');
   const event = await getEventById(eventId);
   if (!event) return res.status(400).send('Match not found');
 
@@ -502,7 +681,7 @@ app.post('/bet', async (req, res) => {
 
   // One prediction per user per event
   const bets = await getBets();
-  const existing = bets.find(b => b.user === user.name && b.fixtureId === eventId);
+  const existing = bets.find(b => b.user === user.userId && b.fixtureId === eventId);
   if (existing) {
     return res.send(`
       <html><body style="background:#020617;color:#e5e7eb;font-family:system-ui;padding:16px;">
@@ -524,7 +703,7 @@ app.post('/bet', async (req, res) => {
 
   const bet = {
     id: Date.now().toString(),
-    user: user.name,
+    user: user.userId,
     fixtureId: eventId,
     sportKey: event.sport_key,
     homeTeam: event.home_team,
@@ -544,32 +723,17 @@ app.post('/bet', async (req, res) => {
   res.send(`
     <html><body style="background:#020617;color:#e5e7eb;font-family:system-ui;padding:16px;">
       <h2>No Betting Zone ✓</h2>
-      <p>${user.name}, you predicted <strong>${selection}</strong> @ ${lockedOdds} — ${stake} pts staked.</p>
-      <p><a href="/" style="color:#22c55e;">Back to home</a> | <a href="/me?name=${encodeURIComponent(user.name)}" style="color:#22c55e;">View your bets</a></p>
+      <p>${user.displayName}, you predicted <strong>${selection}</strong> @ ${lockedOdds} — ${stake} pts staked.</p>
+      <p><a href="/" style="color:#22c55e;">Back to home</a> | <a href="/summary" style="color:#22c55e;">View your bets</a></p>
     </body></html>
   `);
 });
 
 // MY PREDICTIONS SUMMARY PAGE
-app.get('/summary', async (req, res) => {
-  const name = (req.query.name || '').toString().trim();
-  if (!name) {
-    let html = htmlHeader('My Predictions - No Betting Zone');
-    html += `
-      <h2>My Predictions</h2>
-      <p>Enter your name to see your prediction history:</p>
-      <form method="GET" action="/summary">
-        <input name="name" placeholder="Your name" required style="width:70%;max-width:280px;">
-        <button type="submit" style="margin-left:8px;">View</button>
-      </form>
-    `;
-    html += htmlFooter('summary');
-    res.send(html);
-    return;
-  }
-
-  const user = await getUser(name);
-  const bets = (await getBets()).filter(b => b.user === user.name);
+app.get('/summary', requireAuth, async (req, res) => {
+  const user = await getUserById(req.session.userId);
+  if (!user) return res.redirect('/login');
+  const bets = (await getBets()).filter(b => b.user === user.userId);
 
   const total = bets.length;
   const won = bets.filter(b => b.status === 'WON').length;
@@ -578,9 +742,9 @@ app.get('/summary', async (req, res) => {
   const winRate = total - pending > 0 ? Math.round((won / (total - pending)) * 100) : 0;
   const totalNet = user.totalNetPoints;
 
-  let html = htmlHeader(`${user.name} - My Predictions`);
+  let html = htmlHeader(`${user.displayName} - My Predictions`);
   html += `
-    <h2 style="margin-bottom:4px;">${user.name}</h2>
+    <h2 style="margin-bottom:4px;">${user.displayName}</h2>
     <p style="color:#9ca3af;font-size:13px;margin-top:0;">Prediction history</p>
 
     <!-- Stats strip -->
@@ -748,9 +912,10 @@ app.get('/leaderboard', async (req, res) => {
     html += `<p>No players yet.</p>`;
   } else {
     users.forEach((u, idx) => {
+      const name = u.displayName || u.userId || u.name || 'Unknown';
       html += `
         <div class="card">
-          <div>#${idx + 1} - ${u.name}</div>
+          <div>#${idx + 1} - ${name}</div>
           <div style="font-size:12px;color:#9ca3af;">Points: ${u.totalNetPoints.toFixed(1)}</div>
         </div>
       `;
@@ -764,19 +929,24 @@ app.get('/leaderboard', async (req, res) => {
 // FORUM – chat with emojis (from keyboard) and @Name in text
 app.get('/forum', async (req, res) => {
   const messages = await getMessages();
+  const sessionUserId = req.session.userId;
 
   let html = htmlHeader('Forum - No Betting Zone');
-  html += `
-    <h2>Forum</h2>
+  html += `<h2>Forum</h2>`;
+
+  if (sessionUserId) {
+    html += `
     <form method="POST" action="/forum">
-      <p>Name:</p>
-      <input name="name" required style="width:100%;margin-bottom:8px;">
+      <p style="font-size:13px;color:#9ca3af;margin-bottom:4px;">Posting as <strong style="color:#e5e7eb;">${sessionUserId}</strong></p>
       <p>Message (use emojis from your keyboard, @Name to tag):</p>
       <textarea name="text" rows="2" required style="width:100%;"></textarea>
       <button type="submit" style="margin-top:8px;width:100%;">Post</button>
-    </form>
-    <h3 style="margin-top:16px;">Messages</h3>
-  `;
+    </form>`;
+  } else {
+    html += `<p style="font-size:13px;color:#9ca3af;"><a href="/login">Log in</a> to post messages.</p>`;
+  }
+
+  html += `<h3 style="margin-top:16px;">Messages</h3>`;
 
   for (const m of messages.slice().reverse()) {
     html += `
@@ -791,13 +961,13 @@ app.get('/forum', async (req, res) => {
   res.send(html);
 });
 
-app.post('/forum', async (req, res) => {
-  const { name, text } = req.body || {};
-  if (!name || !text) return res.redirect('/forum');
+app.post('/forum', requireAuth, async (req, res) => {
+  const { text } = req.body || {};
+  if (!text) return res.redirect('/forum');
 
   await addMessage({
     id: Date.now().toString(),
-    name: name.trim(),
+    name: req.session.userId,
     text: text.trim(),
     createdAt: new Date().toISOString()
   });
