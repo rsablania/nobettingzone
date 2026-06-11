@@ -1320,17 +1320,33 @@ app.get('/leaderboard', async (req, res) => {
   html += `<h2>Leaderboard</h2>`;
 
   if (!users.length) {
-    html += `<p>No players yet.</p>`;
+    html += `<p style="color:#9ca3af;">No players yet.</p>`;
   } else {
-    users.forEach((u, idx) => {
-      const name = u.displayName || u.userId || u.name || 'Unknown';
-      html += `
-        <div class="card">
-          <div>#${idx + 1} - ${name}</div>
-          <div style="font-size:12px;color:#9ca3af;">Points: ${u.totalNetPoints.toFixed(1)}</div>
-        </div>
-      `;
-    });
+    html += `
+      <table style="width:100%;border-collapse:collapse;font-size:14px;">
+        <thead>
+          <tr style="border-bottom:2px solid #1f2937;color:#6b7280;font-size:12px;text-transform:uppercase;letter-spacing:.05em;">
+            <th style="padding:8px 6px;text-align:left;width:40px;">#</th>
+            <th style="padding:8px 6px;text-align:left;">Player</th>
+            <th style="padding:8px 6px;text-align:right;">Points</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${users.map((u, idx) => {
+            const name = u.displayName || u.userId || u.name || 'Unknown';
+            const pts = (u.totalNetPoints || 0).toFixed(1);
+            const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `${idx + 1}`;
+            const ptColor = u.totalNetPoints > 0 ? '#22c55e' : u.totalNetPoints < 0 ? '#ef4444' : '#e5e7eb';
+            const rowBg = idx % 2 === 0 ? 'background:#0a0f1e;' : '';
+            return `<tr style="border-bottom:1px solid #1f2937;${rowBg}">
+              <td style="padding:10px 6px;font-size:16px;">${medal}</td>
+              <td style="padding:10px 6px;font-weight:${idx < 3 ? '600' : '400'};">${name}</td>
+              <td style="padding:10px 6px;text-align:right;font-weight:700;color:${ptColor};">${u.totalNetPoints >= 0 ? '+' : ''}${pts}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    `;
   }
 
   html += htmlFooter('leaders');
