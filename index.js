@@ -660,7 +660,6 @@ app.get('/', requireAuth, async (req, res) => {
     let html = htmlHeader('No Betting Zone - Home');
     html += `
       <div class="title">No Betting Zone</div>
-      <p style="font-size:14px;color:#9ca3af;">Points-based football prediction game. No real money.</p>
       ${userGreeting}
       ${fetchInfo}
       <h3>Upcoming matches</h3>
