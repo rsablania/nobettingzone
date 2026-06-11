@@ -111,10 +111,126 @@ async function getEventById(id) {
 // Runs at 11 PM IST: settle finished matches, then fetch fresh fixtures+odds.
 // Checks every minute; skips if already ran today.
 
+async function sendPostSettlementEmail(fixtureIds) {
+  try {
+    // Build match sections from settlement logs
+    const logs = [];
+    for (const id of fixtureIds) {
+      const log = await db.get(`settlementLog:${id}`);
+      if (log) logs.push(log);
+    }
+
+    const matchSections = logs.map(log => {
+      const resultLabel = log.result === 'Home' ? `${log.homeTeam} wins`
+        : log.result === 'Away' ? `${log.awayTeam} wins` : 'Draw';
+
+      const entryRows = log.entries.map(e => {
+        const won = e.status === 'WON';
+        const color = won ? '#16a34a' : '#dc2626';
+        const sign = e.netPoints >= 0 ? '+' : '';
+        const grossPts = won ? (e.stake * parseFloat(e.lockedOdds)).toFixed(1) : '0.0';
+        return `<tr style="border-bottom:1px solid #e5e7eb;">
+          <td style="padding:6px 10px;">${e.user}</td>
+          <td style="padding:6px 10px;">${e.selection} @ ${e.lockedOdds}</td>
+          <td style="padding:6px 10px;text-align:center;">${e.stake}</td>
+          <td style="padding:6px 10px;text-align:center;">${grossPts}</td>
+          <td style="padding:6px 10px;text-align:center;">${e.finalPayout.toFixed(1)}</td>
+          <td style="padding:6px 10px;text-align:center;font-weight:bold;color:${color};">${sign}${e.netPoints.toFixed(1)}</td>
+          <td style="padding:6px 10px;text-align:center;color:${color};">${e.status}</td>
+        </tr>`;
+      }).join('');
+
+      const totalStaked = log.totalStaked;
+      const totalGross = log.entries.filter(e => e.status === 'WON')
+        .reduce((sum, e) => sum + e.stake * parseFloat(e.lockedOdds), 0);
+      const formula = totalGross > 0
+        ? `Each winner's payout = (stake × odds / ${totalGross.toFixed(1)}) × ${totalStaked} pts pool`
+        : `All bets lost (no correct picks) — stakes forfeited`;
+
+      return `
+        <h3 style="font-family:sans-serif;margin:24px 0 2px;">${log.homeTeam} vs ${log.awayTeam}</h3>
+        <p style="font-family:sans-serif;font-size:13px;color:#6b7280;margin:0 0 4px;">
+          ${log.leagueName} &nbsp;·&nbsp; Result: <strong style="color:#111;">${resultLabel}</strong>
+          &nbsp;·&nbsp; Pool: <strong>${totalStaked} pts</strong>
+          &nbsp;·&nbsp; Settled: ${log.settledAt}
+        </p>
+        <p style="font-family:sans-serif;font-size:12px;color:#9ca3af;margin:0 0 8px;font-style:italic;">${formula}</p>
+        <table style="border-collapse:collapse;font-family:sans-serif;font-size:13px;width:100%;max-width:640px;">
+          <thead>
+            <tr style="background:#f3f4f6;">
+              <th style="padding:6px 10px;text-align:left;">Player</th>
+              <th style="padding:6px 10px;text-align:left;">Pick @ Odds</th>
+              <th style="padding:6px 10px;text-align:center;">Stake</th>
+              <th style="padding:6px 10px;text-align:center;">Gross pts</th>
+              <th style="padding:6px 10px;text-align:center;">Payout</th>
+              <th style="padding:6px 10px;text-align:center;">Net</th>
+              <th style="padding:6px 10px;text-align:center;">Result</th>
+            </tr>
+          </thead>
+          <tbody>${entryRows}</tbody>
+        </table>`;
+    }).join('<hr style="margin:20px 0;border-color:#e5e7eb;">');
+
+    // Build leaderboard section
+    const userKeys = await db.list('user:');
+    const users = [];
+    for (const key of userKeys) {
+      const u = await db.get(key);
+      if (u) users.push(u);
+    }
+    users.sort((a, b) => b.totalNetPoints - a.totalNetPoints);
+    const leaderRows = users.map((u, i) => {
+      const name = u.displayName || u.userId || 'Unknown';
+      const pts = (u.totalNetPoints || 0).toFixed(1);
+      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`;
+      return `<tr style="border-bottom:1px solid #e5e7eb;">
+        <td style="padding:6px 10px;">${medal}</td>
+        <td style="padding:6px 10px;">${name}</td>
+        <td style="padding:6px 10px;text-align:right;font-weight:bold;">${pts}</td>
+      </tr>`;
+    }).join('');
+
+    const date = moment().tz(TIMEZONE).format('DD MMM YYYY, HH:mm z');
+    await resend.emails.send({
+      from: 'No Betting Zone <onboarding@resend.dev>',
+      to: 'gletterdash@gmail.com',
+      subject: `Settlement Results — ${logs.length} match${logs.length !== 1 ? 'es' : ''} settled`,
+      html: `
+        <h2 style="font-family:sans-serif;">⚽ No Betting Zone — Settlement Results</h2>
+        <p style="font-family:sans-serif;color:#6b7280;">${date} &nbsp;·&nbsp; ${logs.length} match${logs.length !== 1 ? 'es' : ''} settled</p>
+
+        <hr style="border-color:#e5e7eb;">
+        <h2 style="font-family:sans-serif;font-size:16px;">Match Breakdowns</h2>
+        ${matchSections || '<p style="font-family:sans-serif;color:#9ca3af;">No logs found.</p>'}
+
+        <hr style="border-color:#e5e7eb;margin-top:24px;">
+        <h2 style="font-family:sans-serif;font-size:16px;">🏆 Updated Leaderboard</h2>
+        <table style="border-collapse:collapse;font-family:sans-serif;font-size:13px;width:100%;max-width:400px;">
+          <thead>
+            <tr style="background:#f3f4f6;">
+              <th style="padding:6px 10px;text-align:left;">Rank</th>
+              <th style="padding:6px 10px;text-align:left;">Player</th>
+              <th style="padding:6px 10px;text-align:right;">Total pts</th>
+            </tr>
+          </thead>
+          <tbody>${leaderRows}</tbody>
+        </table>
+      `
+    });
+    console.log('[PostSettlement] Email sent —', fixtureIds.length, 'match(es)');
+  } catch (e) {
+    console.error('[PostSettlement] Email error:', e.message);
+  }
+}
+
 async function runDailyJob() {
   console.log('[DailyJob] Starting — settling bets, then fetching fixtures...');
-  try { await settlePendingBets(); } catch (e) { console.error('[DailyJob] Settlement error:', e.message); }
+  let summary = { settled: 0, settledFixtureIds: [] };
+  try { summary = await settlePendingBets(); } catch (e) { console.error('[DailyJob] Settlement error:', e.message); }
   try { await fetchAndStoreFixtures(); } catch (e) { console.error('[DailyJob] Fetch error:', e.message); }
+  if (summary.settled > 0) {
+    await sendPostSettlementEmail(summary.settledFixtureIds);
+  }
   const today = moment().tz(TIMEZONE).format('YYYY-MM-DD');
   await db.set('dailyJob:lastRun', today);
   console.log('[DailyJob] Done for', today);
@@ -293,7 +409,7 @@ async function updateBets(updatedBets) {
 /* ---------------- SETTLEMENT ENGINE ---------------- */
 
 async function settlePendingBets() {
-  const summary = { settled: 0, errors: [] };
+  const summary = { settled: 0, errors: [], settledFixtureIds: [] };
 
   const allBets = await getBets();
   const pendingBets = allBets.filter(b => b.status === 'PENDING');
@@ -384,6 +500,7 @@ async function settlePendingBets() {
       settledAt: moment().tz(TIMEZONE).format('DD MMM YYYY, HH:mm z'),
       entries: logEntries,
     });
+    summary.settledFixtureIds.push(fb.fixtureId);
   }
 
   if (changed) await updateBets(allBets);
