@@ -47,26 +47,6 @@ app.use(session({
 
 // All soccer sport keys on The Odds API free plan
 const SOCCER_SPORT_KEYS = [
-  'soccer_belgium_first_div',
-  'soccer_brazil_campeonato',
-  'soccer_brazil_serie_b',
-  'soccer_chile_campeonato',
-  'soccer_china_superleague',
-  'soccer_conmebol_copa_libertadores',
-  'soccer_conmebol_copa_sudamericana',
-  'soccer_epl',
-  'soccer_finland_veikkausliiga',
-  'soccer_france_ligue_one',
-  'soccer_germany_bundesliga2',
-  'soccer_italy_serie_b',
-  'soccer_japan_j_league',
-  'soccer_league_of_ireland',
-  'soccer_norway_eliteserien',
-  'soccer_spain_segunda_division',
-  'soccer_sweden_allsvenskan',
-  'soccer_sweden_superettan',
-  'soccer_uefa_champs_league',
-  'soccer_uefa_europa_conference_league',
   'soccer_fifa_world_cup',
 ];
 
