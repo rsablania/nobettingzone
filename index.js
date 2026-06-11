@@ -1056,26 +1056,57 @@ app.get('/summary', requireAuth, async (req, res) => {
   if (!bets.length) {
     html += `<p style="color:#9ca3af;">No predictions yet. <a href="/">Pick a match</a> to get started.</p>`;
   } else {
-    // newest first
+    // Pre-fetch events still in snapshot (for kickoff date on pending bets)
+    const eventCache = {};
+    for (const b of bets) {
+      if (b.status === 'PENDING' && !eventCache[b.fixtureId]) {
+        const ev = await getEventById(b.fixtureId);
+        if (ev) eventCache[b.fixtureId] = ev;
+      }
+    }
+
     const sorted = [...bets].reverse();
     for (const b of sorted) {
-      const statusColor = b.status === 'WON' ? '#22c55e' : b.status === 'LOST' ? '#ef4444' : '#9ca3af';
+      const statusColor = b.status === 'WON' ? '#22c55e' : b.status === 'LOST' ? '#ef4444' : '#f59e0b';
       const netLabel = b.netPoints !== null
         ? `<span style="font-weight:bold;color:${b.netPoints >= 0 ? '#22c55e' : '#ef4444'};">${b.netPoints >= 0 ? '+' : ''}${b.netPoints.toFixed(1)} pts</span>`
-        : `<span style="color:#9ca3af;">Pending</span>`;
-      html += `
-        <div class="card">
-          <div style="display:flex;justify-content:space-between;align-items:center;">
-            <div style="font-size:13px;font-weight:bold;">${b.leagueName}</div>
-            <span style="font-size:11px;font-weight:bold;color:${statusColor};border:1px solid ${statusColor};border-radius:4px;padding:2px 6px;">${b.status}</span>
+        : `<span style="color:#f59e0b;">Pending settlement</span>`;
+
+      const ev = eventCache[b.fixtureId];
+      const matchTitle = b.homeTeam && b.awayTeam
+        ? `${b.homeTeam} vs ${b.awayTeam}`
+        : b.leagueName;
+      const kickoffLine = ev
+        ? `<div style="font-size:11px;color:#6b7280;margin-top:1px;">${moment(ev.commence_time).tz(TIMEZONE).format('DD MMM, HH:mm')} IST</div>`
+        : '';
+
+      const selectionMap = { Home: `${b.homeTeam} wins`, Draw: 'Draw', Away: `${b.awayTeam} wins` };
+      const selLabel = selectionMap[b.selection] || b.selection;
+
+      const cardInner = `
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+          <div>
+            <div style="font-size:14px;font-weight:700;color:#e5e7eb;">${matchTitle}</div>
+            <div style="font-size:11px;color:#6b7280;margin-top:1px;">${b.leagueName}</div>
+            ${kickoffLine}
           </div>
-          <div style="font-size:12px;color:#9ca3af;margin-top:4px;">
-            Pick: <strong style="color:#e5e7eb;">${b.selection}</strong> @ ${b.lockedOdds} • Stake: ${b.stake} pts
-          </div>
-          ${b.result ? `<div style="font-size:12px;color:#9ca3af;">Result: <strong style="color:#e5e7eb;">${b.result}</strong></div>` : ''}
-          <div style="font-size:13px;margin-top:6px;">${netLabel}</div>
+          <span style="font-size:11px;font-weight:bold;color:${statusColor};border:1px solid ${statusColor};border-radius:4px;padding:2px 6px;white-space:nowrap;margin-left:8px;">${b.status}</span>
         </div>
+        <div style="font-size:12px;color:#9ca3af;margin-top:8px;">
+          Pick: <strong style="color:#e5e7eb;">${selLabel}</strong> @ ${b.lockedOdds} &nbsp;·&nbsp; Stake: ${b.stake} pts
+        </div>
+        ${b.result ? `<div style="font-size:12px;color:#9ca3af;margin-top:2px;">Result: <strong style="color:#e5e7eb;">${b.result}</strong></div>` : ''}
+        <div style="font-size:13px;margin-top:6px;">${netLabel}</div>
+        ${b.status === 'PENDING' ? `<div style="font-size:11px;color:#6b7280;margin-top:6px;">Tap to see all predictions →</div>` : ''}
       `;
+
+      if (b.status === 'PENDING') {
+        html += `<a href="/match?id=${b.fixtureId}" style="display:block;text-decoration:none;color:inherit;">
+          <div class="card" style="border-color:#374151;">${cardInner}</div>
+        </a>`;
+      } else {
+        html += `<div class="card">${cardInner}</div>`;
+      }
     }
   }
 
