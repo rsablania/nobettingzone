@@ -835,42 +835,60 @@ app.get('/match', requireAuth, async (req, res) => {
       <hr style="border-color:#1f2937;margin:12px 0;">
     `;
 
-    if (myBet) {
-      // Already placed — show their pick
+    // Is betting still open?
+    const kickoffTime = new Date(event.commence_time);
+    const bettingOpen = new Date() < new Date(kickoffTime.getTime() - 10 * 60 * 1000);
+
+    if (myBet && !bettingOpen) {
+      // Betting closed — show locked pick, no editing
       const selLabel = labelMap[myBet.selection] || myBet.selection;
       html += `
         <div style="background:#111827;border:1px solid #22c55e;border-radius:10px;padding:14px 16px;margin-bottom:16px;">
-          <div style="font-size:12px;color:#22c55e;margin-bottom:4px;">✓ Your prediction</div>
+          <div style="font-size:12px;color:#22c55e;margin-bottom:4px;">✓ Your prediction (locked)</div>
           <div style="font-size:16px;font-weight:700;">${selLabel}</div>
           <div style="font-size:13px;color:#9ca3af;margin-top:4px;">@ ${myBet.lockedOdds} &nbsp;·&nbsp; Stake: ${myBet.stake} pts</div>
         </div>
       `;
     } else {
+      // Show form — new bet or modifiable existing bet
+      const isModify = !!myBet;
+      if (isModify) {
+        html += `
+          <div style="background:#111827;border:1px solid #f59e0b;border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#fbbf24;">
+            ✏️ You already picked <strong>${labelMap[myBet.selection] || myBet.selection}</strong> @ ${myBet.lockedOdds} (${myBet.stake} pts) — change it below until 10 min before kick-off.
+          </div>
+        `;
+      }
       html += `
         <form method="POST" action="/bet">
           <input type="hidden" name="eventId" value="${eventId}">
           <input type="hidden" name="leagueName" value="${leagueName}">
-          <p style="margin-bottom:6px;">Pick result (1X2):</p>
+          <p style="margin-bottom:6px;">${isModify ? 'Change your pick (1X2):' : 'Pick result (1X2):'}</p>
       `;
       oddsToShow.forEach(o => {
+        const isSelected = isModify && myBet.selection === o.value;
         html += `
           <div style="margin-bottom:8px;">
-            <label style="display:flex;align-items:center;gap:10px;background:#111827;border:1px solid #1f2937;border-radius:8px;padding:10px 12px;cursor:pointer;">
-              <input type="radio" name="selection" value="${o.value}" required style="accent-color:#22c55e;width:18px;height:18px;">
+            <label style="display:flex;align-items:center;gap:10px;background:#111827;border:1px solid ${isSelected ? '#22c55e' : '#1f2937'};border-radius:8px;padding:10px 12px;cursor:pointer;">
+              <input type="radio" name="selection" value="${o.value}" ${isSelected ? 'checked' : ''} required style="accent-color:#22c55e;width:18px;height:18px;">
               <span style="flex:1;font-size:14px;">${labelMap[o.value] || o.value}</span>
               <span style="font-size:13px;font-weight:bold;color:#22c55e;">${o.odd}</span>
             </label>
           </div>
         `;
       });
+      const stakeOptions = [20, 40, 60, 80, 100];
       html += `
           <p style="margin:14px 0 6px;">Choose stake:</p>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
-            ${[20, 40, 60, 80, 100].map((s, i) => `
+            ${stakeOptions.map(s => {
+              const isDefaultStake = isModify ? s === myBet.stake : s === 100;
+              return `
               <label style="flex:1;min-width:48px;text-align:center;cursor:pointer;" onclick="selectStake(this, ${s})">
-                <input type="radio" name="stake" value="${s}" ${i === 4 ? 'checked' : ''} required style="display:none;">
-                <span class="stake-btn" style="display:block;padding:8px 4px;border:1px solid ${i === 4 ? '#7c3aed' : '#374151'};border-radius:8px;font-size:14px;font-weight:600;background:${i === 4 ? '#4c1d95' : '#1f2937'};color:#fff;">${s}</span>
-              </label>`).join('')}
+                <input type="radio" name="stake" value="${s}" ${isDefaultStake ? 'checked' : ''} required style="display:none;">
+                <span class="stake-btn" style="display:block;padding:8px 4px;border:1px solid ${isDefaultStake ? '#7c3aed' : '#374151'};border-radius:8px;font-size:14px;font-weight:600;background:${isDefaultStake ? '#4c1d95' : '#1f2937'};color:#fff;">${s}</span>
+              </label>`;
+            }).join('')}
           </div>
           <script>
             function selectStake(clicked, val) {
@@ -883,14 +901,14 @@ app.get('/match', requireAuth, async (req, res) => {
               span.style.background = '#4c1d95';
             }
           </script>
-          <button type="submit" style="margin-top:4px;width:100%;">Place Bet</button>
+          <button type="submit" style="margin-top:4px;width:100%;">${isModify ? 'Update Prediction' : 'Place Bet'}</button>
         </form>
         <p style="margin-top:8px;font-size:11px;color:#6b7280;">${odds ? '📊 Live bookmaker odds' : '📊 Estimated odds'}</p>
 
         <!-- Confirmation overlay -->
         <div id="bet-confirm-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:999;align-items:center;justify-content:center;">
           <div style="background:#111827;border:1px solid #374151;border-radius:14px;padding:24px 20px;max-width:320px;width:90%;text-align:center;">
-            <div style="font-size:15px;font-weight:700;color:#e5e7eb;margin-bottom:6px;">Confirm your bet</div>
+            <div style="font-size:15px;font-weight:700;color:#e5e7eb;margin-bottom:6px;">${isModify ? 'Update your prediction' : 'Confirm your bet'}</div>
             <div style="font-size:13px;color:#9ca3af;margin-bottom:14px;">${home} vs ${away}</div>
             <div style="background:#1f2937;border-radius:8px;padding:12px;margin-bottom:16px;">
               <div style="font-size:13px;color:#9ca3af;">Pick</div>
@@ -1001,24 +1019,11 @@ app.post('/bet', requireAuth, async (req, res) => {
     return res.send(`Betting closed — predictions locked 10 minutes before kick-off (${timeStr} IST).`);
   }
 
-  // One prediction per user per event
-  const bets = await getBets();
-  const existing = bets.find(b => b.user === user.userId && b.fixtureId === eventId);
-  if (existing) {
-    return res.send(`
-      <html><body style="background:#020617;color:#e5e7eb;font-family:system-ui;padding:16px;">
-        <h2>No Betting Zone</h2>
-        <p>You already placed a prediction on this match.</p>
-        <p><a href="/">Back to home</a></p>
-      </body></html>
-    `);
-  }
-
   // Validate stake
   const stakeInput = parseInt(req.body.stake);
   const stake = [20, 40, 60, 80, 100].includes(stakeInput) ? stakeInput : 100;
 
-  // Lock in odds from the event's bookmaker data
+  // Lock in odds from the current snapshot at time of placement/modification
   const odds = extractOdds(event);
   let lockedOdds = 2.0;
   if (odds) {
@@ -1026,24 +1031,41 @@ app.post('/bet', requireAuth, async (req, res) => {
     if (match) lockedOdds = parseFloat(match.odd) || 2.0;
   }
 
-  const bet = {
-    id: Date.now().toString(),
-    user: user.userId,
-    fixtureId: eventId,
-    sportKey: event.sport_key,
-    homeTeam: event.home_team,
-    awayTeam: event.away_team,
-    leagueName: leagueName || event.sport_title || 'Unknown League',
-    market: 'MATCH_RESULT',
-    selection,
-    stake,
-    lockedOdds,
-    status: 'PENDING',
-    netPoints: null,
-    result: null,
-  };
+  // Check for existing bet — update if found, add new if not
+  const bets = await getBets();
+  const existingIdx = bets.findIndex(b => b.user === user.userId && b.fixtureId === eventId);
+  let isModify = false;
 
-  await addBet(bet);
+  if (existingIdx !== -1) {
+    // Update in place — preserve id and original fields, update pick/stake/odds
+    bets[existingIdx] = {
+      ...bets[existingIdx],
+      selection,
+      stake,
+      lockedOdds,
+      modifiedAt: new Date().toISOString(),
+    };
+    await updateBets(bets);
+    isModify = true;
+  } else {
+    const bet = {
+      id: Date.now().toString(),
+      user: user.userId,
+      fixtureId: eventId,
+      sportKey: event.sport_key,
+      homeTeam: event.home_team,
+      awayTeam: event.away_team,
+      leagueName: leagueName || event.sport_title || 'Unknown League',
+      market: 'MATCH_RESULT',
+      selection,
+      stake,
+      lockedOdds,
+      status: 'PENDING',
+      netPoints: null,
+      result: null,
+    };
+    await addBet(bet);
+  }
 
   const selectionLabel = selection === 'Home' ? `${event.home_team} wins`
     : selection === 'Away' ? `${event.away_team} wins`
@@ -1052,8 +1074,8 @@ app.post('/bet', requireAuth, async (req, res) => {
   res.send(`
     <html><body style="background:#020617;color:#e5e7eb;font-family:system-ui;padding:20px;">
       <div style="max-width:400px;margin:0 auto;text-align:center;padding-top:40px;">
-        <div style="font-size:48px;margin-bottom:12px;">✅</div>
-        <h2 style="font-size:22px;margin-bottom:6px;">Bet Placed!</h2>
+        <div style="font-size:48px;margin-bottom:12px;">${isModify ? '✏️' : '✅'}</div>
+        <h2 style="font-size:22px;margin-bottom:6px;">${isModify ? 'Prediction Updated!' : 'Bet Placed!'}</h2>
         <p style="font-size:15px;color:#9ca3af;margin-bottom:24px;">${event.home_team} vs ${event.away_team}</p>
         <div style="background:#111827;border:1px solid #1f2937;border-radius:12px;padding:20px;margin-bottom:24px;">
           <div style="font-size:13px;color:#9ca3af;margin-bottom:4px;">Your pick</div>
@@ -1206,7 +1228,7 @@ app.get('/rules', requireAuth, (req, res) => {
         <li>Each match offers three outcomes — <strong style="color:#e5e7eb;">Home win, Draw, Away win</strong> (1X2 format).</li>
         <li>Pick one outcome and choose a stake: <strong style="color:#a78bfa;">20 / 40 / 60 / 80 / 100 points</strong>.</li>
         <li>Betting closes <strong style="color:#e5e7eb;">10 minutes before kick-off</strong>. No changes after that.</li>
-        <li>One prediction per user per match.</li>
+        <li>One prediction per user per match — you can change your pick and stake any time until <strong style="color:#e5e7eb;">10 minutes before kick-off</strong>. The odds at the time of your last change are locked in.</li>
       </ul>
     </div>
 
