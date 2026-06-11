@@ -447,6 +447,7 @@ function htmlFooter(active) {
       <a href="/" class="${active === 'home' ? 'active' : ''}">Home</a>
       <a href="/summary" class="${active === 'summary' ? 'active' : ''}">My Stats</a>
       <a href="/leaderboard" class="${active === 'leaders' ? 'active' : ''}">Leaders</a>
+      <a href="/results" class="${active === 'results' ? 'active' : ''}">Results</a>
       <a href="/forum" class="${active === 'forum' ? 'active' : ''}">Forum</a>
       <a href="/admin" class="${active === 'admin' ? 'active' : ''}">Admin</a>
     </div>
@@ -1111,6 +1112,122 @@ app.get('/summary', requireAuth, async (req, res) => {
   }
 
   html += htmlFooter('summary');
+  res.send(html);
+});
+
+// RESULTS – list of all settled matches
+app.get('/results', requireAuth, async (req, res) => {
+  const keys = await db.list('settlementLog:');
+  const logs = [];
+  for (const key of keys) {
+    const log = await db.get(key);
+    if (log) logs.push(log);
+  }
+  logs.sort((a, b) => (a.settledAt < b.settledAt ? 1 : -1)); // newest first
+
+  let html = htmlHeader('Match Results - No Betting Zone');
+  html += `<h2>Match Results</h2>`;
+
+  if (!logs.length) {
+    html += `<p style="color:#9ca3af;">No settled matches yet. Check back after results are in.</p>`;
+  } else {
+    for (const log of logs) {
+      const resultLabel = log.result === 'Home' ? `${log.homeTeam} wins`
+        : log.result === 'Away' ? `${log.awayTeam} wins` : 'Draw';
+      const winners = log.entries.filter(e => e.status === 'WON').length;
+      const total = log.entries.length;
+      html += `
+        <a href="/results/${log.fixtureId}" style="display:block;text-decoration:none;color:inherit;">
+          <div class="card" style="margin-bottom:10px;">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+              <div>
+                <div style="font-size:14px;font-weight:700;color:#e5e7eb;">${log.homeTeam} vs ${log.awayTeam}</div>
+                <div style="font-size:11px;color:#6b7280;margin-top:2px;">${log.leagueName}</div>
+                <div style="font-size:11px;color:#6b7280;margin-top:1px;">${log.settledAt}</div>
+              </div>
+              <span style="font-size:11px;font-weight:bold;color:#22c55e;border:1px solid #22c55e;border-radius:4px;padding:2px 6px;white-space:nowrap;margin-left:8px;">SETTLED</span>
+            </div>
+            <div style="margin-top:8px;display:flex;justify-content:space-between;align-items:center;">
+              <span style="font-size:13px;font-weight:600;color:#e5e7eb;">Result: ${resultLabel}</span>
+              <span style="font-size:12px;color:#9ca3af;">${winners}/${total} correct &nbsp;·&nbsp; ${log.totalStaked} pts pool</span>
+            </div>
+            <div style="font-size:11px;color:#6b7280;margin-top:4px;">Tap to see full breakdown →</div>
+          </div>
+        </a>`;
+    }
+  }
+
+  html += htmlFooter('results');
+  res.send(html);
+});
+
+// RESULTS – detail page for one settled match
+app.get('/results/:fixtureId', requireAuth, async (req, res) => {
+  const log = await db.get(`settlementLog:${req.params.fixtureId}`);
+  if (!log) {
+    return res.send(htmlHeader('Not Found') + `<p style="color:#9ca3af;">No settlement data found for this match.</p>` + htmlFooter('results'));
+  }
+
+  const resultLabel = log.result === 'Home' ? `${log.homeTeam} wins`
+    : log.result === 'Away' ? `${log.awayTeam} wins` : 'Draw';
+
+  const selLabel = (sel, home, away) =>
+    sel === 'Home' ? `${home} wins` : sel === 'Away' ? `${away} wins` : 'Draw';
+
+  // Sort: winners first, then by netPoints desc
+  const sorted = [...log.entries].sort((a, b) => {
+    if (a.status === b.status) return b.netPoints - a.netPoints;
+    return a.status === 'WON' ? -1 : 1;
+  });
+
+  let html = htmlHeader(`${log.homeTeam} vs ${log.awayTeam} - Results`);
+  html += `
+    <a href="/results" style="font-size:12px;color:#6b7280;text-decoration:none;">← Back to Results</a>
+
+    <div class="card" style="margin-top:10px;margin-bottom:16px;">
+      <div style="font-size:15px;font-weight:700;color:#e5e7eb;">${log.homeTeam} vs ${log.awayTeam}</div>
+      <div style="font-size:12px;color:#6b7280;margin-top:2px;">${log.leagueName} &nbsp;·&nbsp; ${log.settledAt}</div>
+      <div style="margin-top:10px;display:flex;gap:16px;flex-wrap:wrap;">
+        <div style="text-align:center;">
+          <div style="font-size:18px;font-weight:bold;color:#22c55e;">${resultLabel}</div>
+          <div style="font-size:10px;color:#6b7280;margin-top:2px;">RESULT</div>
+        </div>
+        <div style="text-align:center;">
+          <div style="font-size:18px;font-weight:bold;color:#e5e7eb;">${log.totalStaked}</div>
+          <div style="font-size:10px;color:#6b7280;margin-top:2px;">TOTAL POOL (pts)</div>
+        </div>
+        <div style="text-align:center;">
+          <div style="font-size:18px;font-weight:bold;color:#e5e7eb;">${log.entries.length}</div>
+          <div style="font-size:10px;color:#6b7280;margin-top:2px;">PREDICTIONS</div>
+        </div>
+      </div>
+    </div>
+
+    <h3 style="font-size:13px;color:#9ca3af;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em;">All Predictions</h3>
+  `;
+
+  for (const e of sorted) {
+    const won = e.status === 'WON';
+    const netColor = e.netPoints >= 0 ? '#22c55e' : '#ef4444';
+    const netSign = e.netPoints >= 0 ? '+' : '';
+    html += `
+      <div class="card" style="margin-bottom:8px;border-left:3px solid ${won ? '#22c55e' : '#ef4444'};">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-size:13px;font-weight:700;color:#e5e7eb;">${e.user}</span>
+          <span style="font-size:12px;font-weight:bold;color:${netColor};">${netSign}${Number(e.netPoints).toFixed(1)} pts</span>
+        </div>
+        <div style="font-size:12px;color:#9ca3af;margin-top:4px;">
+          Picked: <strong style="color:#e5e7eb;">${selLabel(e.selection, log.homeTeam, log.awayTeam)}</strong>
+          &nbsp;·&nbsp; Stake: ${e.stake} pts &nbsp;·&nbsp; Odds: ${e.lockedOdds}
+        </div>
+        <div style="font-size:11px;margin-top:4px;">
+          <span style="color:${won ? '#22c55e' : '#ef4444'};font-weight:600;">${won ? '✓ WON' : '✗ LOST'}</span>
+          ${won ? `<span style="color:#6b7280;margin-left:8px;">Payout: ${Number(e.finalPayout).toFixed(1)} pts</span>` : ''}
+        </div>
+      </div>`;
+  }
+
+  html += htmlFooter('results');
   res.send(html);
 });
 
