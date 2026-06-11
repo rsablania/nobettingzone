@@ -820,51 +820,105 @@ app.get('/match', requireAuth, async (req, res) => {
       { value: 'Away', odd: '2.10' },
     ];
 
+    // Fetch existing bets for this fixture
+    const allBets = await getBets();
+    const fixtureBets = allBets.filter(b => b.fixtureId === eventId);
+    const myBet = fixtureBets.find(b => b.user === req.session.userId);
+
+    const labelMap = { Home: `${home} wins`, Draw: 'Draw', Away: `${away} wins` };
+
     let html = htmlHeader(`${home} vs ${away} - No Betting Zone`);
     html += `
       <h2>${home} vs ${away}</h2>
-      <div style="font-size:12px;color:#9ca3af;">
-        ${leagueName} • ${date}
-      </div>
+      <div style="font-size:12px;color:#9ca3af;">${leagueName} • ${date}</div>
       <hr style="border-color:#1f2937;margin:12px 0;">
-      <form method="POST" action="/bet">
-        <input type="hidden" name="eventId" value="${eventId}">
-        <input type="hidden" name="leagueName" value="${leagueName}">
-        <p style="margin-bottom:6px;">Pick result (1X2):</p>
     `;
 
-    const labelMap = { Home: `${home} wins`, Draw: 'Draw', Away: `${away} wins` };
-    oddsToShow.forEach(o => {
+    if (myBet) {
+      // Already placed — show their pick
+      const selLabel = labelMap[myBet.selection] || myBet.selection;
       html += `
-        <div style="margin-bottom:8px;">
-          <label style="display:flex;align-items:center;gap:10px;background:#111827;border:1px solid #1f2937;border-radius:8px;padding:10px 12px;cursor:pointer;">
-            <input type="radio" name="selection" value="${o.value}" required style="accent-color:#22c55e;width:18px;height:18px;">
-            <span style="flex:1;font-size:14px;">${labelMap[o.value] || o.value}</span>
-            <span style="font-size:13px;font-weight:bold;color:#22c55e;">${o.odd}</span>
-          </label>
+        <div style="background:#111827;border:1px solid #22c55e;border-radius:10px;padding:14px 16px;margin-bottom:16px;">
+          <div style="font-size:12px;color:#22c55e;margin-bottom:4px;">✓ Your prediction</div>
+          <div style="font-size:16px;font-weight:700;">${selLabel}</div>
+          <div style="font-size:13px;color:#9ca3af;margin-top:4px;">@ ${myBet.lockedOdds} &nbsp;·&nbsp; Stake: ${myBet.stake} pts</div>
         </div>
       `;
-    });
+    } else {
+      html += `
+        <form method="POST" action="/bet">
+          <input type="hidden" name="eventId" value="${eventId}">
+          <input type="hidden" name="leagueName" value="${leagueName}">
+          <p style="margin-bottom:6px;">Pick result (1X2):</p>
+      `;
+      oddsToShow.forEach(o => {
+        html += `
+          <div style="margin-bottom:8px;">
+            <label style="display:flex;align-items:center;gap:10px;background:#111827;border:1px solid #1f2937;border-radius:8px;padding:10px 12px;cursor:pointer;">
+              <input type="radio" name="selection" value="${o.value}" required style="accent-color:#22c55e;width:18px;height:18px;">
+              <span style="flex:1;font-size:14px;">${labelMap[o.value] || o.value}</span>
+              <span style="font-size:13px;font-weight:bold;color:#22c55e;">${o.odd}</span>
+            </label>
+          </div>
+        `;
+      });
+      html += `
+          <p style="margin:14px 0 6px;">Choose stake:</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
+            ${[20, 40, 60, 80, 100].map((s, i) => `
+              <label style="flex:1;min-width:48px;text-align:center;cursor:pointer;">
+                <input type="radio" name="stake" value="${s}" ${i === 4 ? 'checked' : ''} required style="display:none;">
+                <span class="stake-btn" style="display:block;padding:8px 4px;border:1px solid #374151;border-radius:8px;font-size:14px;font-weight:600;background:#1f2937;color:#e5e7eb;">${s}</span>
+              </label>`).join('')}
+          </div>
+          <style>
+            input[type=radio][name=stake]:checked + .stake-btn {
+              border-color:#7c3aed;background:#4c1d95;color:#fff;
+            }
+          </style>
+          <button type="submit" style="margin-top:4px;width:100%;">Place Bet</button>
+        </form>
+        <p style="margin-top:8px;font-size:11px;color:#6b7280;">${odds ? '📊 Live bookmaker odds' : '📊 Estimated odds'}</p>
+      `;
+    }
 
-    html += `
-        <p style="margin:14px 0 6px;">Choose stake:</p>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
-          ${[20, 40, 60, 80, 100].map((s, i) => `
-            <label style="flex:1;min-width:48px;text-align:center;cursor:pointer;">
-              <input type="radio" name="stake" value="${s}" ${i === 4 ? 'checked' : ''} required style="display:none;">
-              <span class="stake-btn" style="display:block;padding:8px 4px;border:1px solid #374151;border-radius:8px;font-size:14px;font-weight:600;background:#1f2937;color:#e5e7eb;">${s}</span>
-            </label>`).join('')}
-        </div>
-        <style>
-          input[type=radio][name=stake]:checked + .stake-btn {
-            border-color:#7c3aed;background:#4c1d95;color:#fff;
-          }
-        </style>
-        <button type="submit" style="margin-top:4px;width:100%;">Place Bet</button>
-      </form>
-      <p style="margin-top:8px;font-size:11px;color:#6b7280;">${odds ? '📊 Live bookmaker odds' : '📊 Estimated odds'}</p>
-      <p><a href="/">Back to Home</a></p>
-    `;
+    // Predictions so far table
+    html += `<hr style="border-color:#1f2937;margin:16px 0;">`;
+    if (fixtureBets.length === 0) {
+      html += `<p style="font-size:13px;color:#6b7280;">No predictions placed yet.</p>`;
+    } else {
+      const totalStaked = fixtureBets.reduce((s, b) => s + b.stake, 0);
+      html += `
+        <p style="font-size:13px;color:#9ca3af;margin-bottom:8px;">
+          Predictions so far &nbsp;·&nbsp; <strong style="color:#e5e7eb;">${fixtureBets.length}</strong> player${fixtureBets.length !== 1 ? 's' : ''}
+          &nbsp;·&nbsp; Pool: <strong style="color:#e5e7eb;">${totalStaked} pts</strong>
+        </p>
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <thead>
+            <tr style="border-bottom:1px solid #1f2937;color:#6b7280;font-size:11px;text-transform:uppercase;">
+              <th style="padding:6px 4px;text-align:left;">Player</th>
+              <th style="padding:6px 4px;text-align:left;">Pick</th>
+              <th style="padding:6px 4px;text-align:right;">Stake</th>
+              <th style="padding:6px 4px;text-align:right;">Odds</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${fixtureBets.map(b => {
+              const isMe = b.user === req.session.userId;
+              const selLabel = labelMap[b.selection] || b.selection;
+              return `<tr style="border-bottom:1px solid #1f2937;${isMe ? 'color:#22c55e;' : ''}">
+                <td style="padding:8px 4px;">${b.user}${isMe ? ' ★' : ''}</td>
+                <td style="padding:8px 4px;">${selLabel}</td>
+                <td style="padding:8px 4px;text-align:right;">${b.stake}</td>
+                <td style="padding:8px 4px;text-align:right;">${b.lockedOdds}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      `;
+    }
+
+    html += `<p style="margin-top:12px;"><a href="/">← Back to Home</a></p>`;
     html += htmlFooter('home');
     res.send(html);
   } catch (e) {
