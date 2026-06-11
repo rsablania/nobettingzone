@@ -586,7 +586,7 @@ app.get('/', async (req, res) => {
         for (const ev of list) {
           const kickoff = new Date(ev.commence_time);
           const minsLeft = Math.round((kickoff - now) / 60000);
-          const bettingOpen = kickoff - now > cutoff;
+          const bettingOpen = ev.id === 'dummy-match-ab' || kickoff - now > cutoff;
           const dateStr = moment(ev.commence_time).tz(TIMEZONE).format('DD MMM, HH:mm');
           const badge = !bettingOpen
             ? `<span style="font-size:11px;color:#6b7280;border:1px solid #374151;border-radius:4px;padding:1px 5px;">Closed</span>`
@@ -749,12 +749,14 @@ app.post('/bet', requireAuth, async (req, res) => {
   const event = await getEventById(eventId);
   if (!event) return res.status(400).send('Match not found');
 
-  // Betting closes 10 minutes before kick-off
-  const kickoff = new Date(event.commence_time);
-  const tenMinsBefore = new Date(kickoff.getTime() - 10 * 60 * 1000);
-  if (new Date() >= tenMinsBefore) {
-    const timeStr = moment(kickoff).tz(TIMEZONE).format('DD MMM, HH:mm');
-    return res.send(`Betting closed — predictions locked 10 minutes before kick-off (${timeStr} IST).`);
+  // Betting closes 10 minutes before kick-off (dummy match is always open)
+  if (eventId !== 'dummy-match-ab') {
+    const kickoff = new Date(event.commence_time);
+    const tenMinsBefore = new Date(kickoff.getTime() - 10 * 60 * 1000);
+    if (new Date() >= tenMinsBefore) {
+      const timeStr = moment(kickoff).tz(TIMEZONE).format('DD MMM, HH:mm');
+      return res.send(`Betting closed — predictions locked 10 minutes before kick-off (${timeStr} IST).`);
+    }
   }
 
   // One prediction per user per event
