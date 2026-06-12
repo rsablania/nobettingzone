@@ -622,10 +622,12 @@ app.post('/verify-email', async (req, res) => {
 app.get('/login', (req, res) => {
   if (req.session.userId) return res.redirect('/');
   const err = req.query.error || '';
+  const msg = req.query.msg || '';
   let html = htmlHeader('Login - No Betting Zone');
   html += `
     <h2>Log In</h2>
     ${err ? `<p style="color:#ef4444;font-size:13px;">${err}</p>` : ''}
+    ${msg ? `<p style="color:#22c55e;font-size:13px;">${msg}</p>` : ''}
     <form method="POST" action="/login">
       <p style="margin-bottom:4px;font-size:13px;">Email</p>
       <input name="email" type="email" placeholder="you@example.com" required autocomplete="email"
@@ -635,7 +637,8 @@ app.get('/login', (req, res) => {
         style="width:100%;margin-bottom:16px;">
       <button type="submit" style="width:100%;">Log In</button>
     </form>
-    <p style="font-size:13px;margin-top:16px;">No account? <a href="/register">Register</a></p>
+    <p style="font-size:13px;margin-top:12px;"><a href="/forgot-password">Forgot password?</a></p>
+    <p style="font-size:13px;margin-top:8px;">No account? <a href="/register">Register</a></p>
   `;
   html += htmlFooter('');
   res.send(html);
@@ -661,6 +664,138 @@ app.post('/login', async (req, res) => {
 // LOGOUT
 app.get('/logout', (req, res) => {
   req.session.destroy(() => res.redirect('/login'));
+});
+
+// FORGOT PASSWORD – step 1: enter registered email
+app.get('/forgot-password', (req, res) => {
+  if (req.session.userId) return res.redirect('/');
+  const err = req.query.error || '';
+  let html = htmlHeader('Forgot Password - No Betting Zone');
+  html += `
+    <h2>Reset Password</h2>
+    <p style="font-size:13px;color:#9ca3af;margin-bottom:16px;">Enter the email address you registered with. An OTP will be sent to the admin who will share it with you.</p>
+    ${err ? `<p style="color:#ef4444;font-size:13px;">${err}</p>` : ''}
+    <form method="POST" action="/forgot-password">
+      <p style="margin-bottom:4px;font-size:13px;">Registered Email</p>
+      <input name="email" type="email" placeholder="you@example.com" required autocomplete="email"
+        style="width:100%;margin-bottom:16px;">
+      <button type="submit" style="width:100%;">Send OTP →</button>
+    </form>
+    <p style="font-size:13px;margin-top:16px;"><a href="/login">← Back to Login</a></p>
+  `;
+  html += htmlFooter('');
+  res.send(html);
+});
+
+app.post('/forgot-password', async (req, res) => {
+  if (req.session.userId) return res.redirect('/');
+  const { email } = req.body || {};
+  if (!email) return res.redirect('/forgot-password?error=Please+enter+your+email.');
+  try {
+    const user = await getUserByEmail(email);
+    if (!user) return res.redirect('/forgot-password?error=No+account+found+with+that+email.');
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    await db.set(`reset-otp:${email.toLowerCase()}`, {
+      otp, userId: user.userId, email,
+      expiresAt: Date.now() + 15 * 60 * 1000
+    });
+
+    await resend.emails.send({
+      from: 'No Betting Zone <onboarding@resend.dev>',
+      to: 'gletterdash@gmail.com',
+      subject: `Password Reset OTP for: ${user.userId}`,
+      html: `<p>Password reset request:</p><ul><li><strong>Username:</strong> ${user.userId}</li><li><strong>Email:</strong> ${email}</li><li><strong>OTP:</strong> <span style="font-size:20px;letter-spacing:4px;font-weight:bold;">${otp}</span></li></ul><p>This code expires in 15 minutes.</p>`
+    });
+
+    res.redirect(`/forgot-password-otp-info?email=${encodeURIComponent(email)}`);
+  } catch (e) {
+    console.error('[ForgotPassword]', e.message);
+    res.redirect('/forgot-password?error=Something+went+wrong.+Please+try+again.');
+  }
+});
+
+// FORGOT PASSWORD OTP INFO – contact admin page
+app.get('/forgot-password-otp-info', (req, res) => {
+  if (req.session.userId) return res.redirect('/');
+  const email = req.query.email || '';
+  let html = htmlHeader('Check with Admin - No Betting Zone');
+  html += `
+    <h2>Almost there!</h2>
+    <div class="card" style="text-align:center;padding:24px 16px;">
+      <div style="font-size:32px;margin-bottom:12px;">🔐</div>
+      <p style="font-size:15px;font-weight:600;margin:0 0 8px;">Contact Shiladitya Saha for your password reset OTP</p>
+      <p style="font-size:13px;color:#9ca3af;margin:0;">Once you have your 6-digit code, tap the button below to set a new password.</p>
+    </div>
+    <a href="/reset-password?email=${encodeURIComponent(email)}"
+      style="display:block;text-align:center;margin-top:16px;padding:12px;background:#7c3aed;color:#fff;border-radius:10px;font-size:15px;text-decoration:none;font-weight:600;">
+      I have my OTP →
+    </a>
+  `;
+  html += htmlFooter('');
+  res.send(html);
+});
+
+// RESET PASSWORD – enter OTP + new password
+app.get('/reset-password', (req, res) => {
+  if (req.session.userId) return res.redirect('/');
+  const email = req.query.email || '';
+  const err = req.query.error || '';
+  let html = htmlHeader('Reset Password - No Betting Zone');
+  html += `
+    <h2>Set New Password</h2>
+    ${err ? `<p style="color:#ef4444;font-size:13px;">${err}</p>` : ''}
+    <form method="POST" action="/reset-password">
+      <input type="hidden" name="email" value="${email}">
+      <p style="margin-bottom:4px;font-size:13px;">OTP Code</p>
+      <input name="otp" placeholder="6-digit code" required maxlength="6" autocomplete="one-time-code"
+        style="width:100%;margin-bottom:12px;letter-spacing:6px;font-size:20px;text-align:center;">
+      <p style="margin-bottom:4px;font-size:13px;">New Password</p>
+      <input name="password" type="password" placeholder="Min 6 characters" required autocomplete="new-password"
+        style="width:100%;margin-bottom:12px;">
+      <p style="margin-bottom:4px;font-size:13px;">Confirm New Password</p>
+      <input name="confirmPassword" type="password" placeholder="Repeat new password" required autocomplete="new-password"
+        style="width:100%;margin-bottom:16px;">
+      <button type="submit" style="width:100%;">Reset Password</button>
+    </form>
+  `;
+  html += htmlFooter('');
+  res.send(html);
+});
+
+app.post('/reset-password', async (req, res) => {
+  if (req.session.userId) return res.redirect('/');
+  const { email, otp, password, confirmPassword } = req.body || {};
+  const errBase = `/reset-password?email=${encodeURIComponent(email || '')}`;
+
+  if (!email || !otp || !password || !confirmPassword)
+    return res.redirect(`${errBase}&error=All+fields+are+required.`);
+  if (password !== confirmPassword)
+    return res.redirect(`${errBase}&error=Passwords+do+not+match.`);
+  if (password.length < 6)
+    return res.redirect(`${errBase}&error=Password+must+be+at+least+6+characters.`);
+
+  try {
+    const pending = await db.get(`reset-otp:${email.toLowerCase()}`);
+    if (!pending) return res.redirect(`${errBase}&error=OTP+expired.+Please+start+over.`);
+    if (Date.now() > pending.expiresAt) {
+      await db.delete(`reset-otp:${email.toLowerCase()}`);
+      return res.redirect(`${errBase}&error=OTP+expired.+Please+start+over.`);
+    }
+    if (otp.trim() !== pending.otp)
+      return res.redirect(`${errBase}&error=Incorrect+OTP.+Please+try+again.`);
+
+    const newHash = await bcrypt.hash(password, 10);
+    const user = await getUserByEmail(email);
+    user.passwordHash = newHash;
+    await db.set(`user:${user.userId.toLowerCase()}`, user);
+    await db.delete(`reset-otp:${email.toLowerCase()}`);
+
+    res.redirect('/login?msg=Password+reset+successfully.+Please+log+in.');
+  } catch (e) {
+    console.error('[ResetPassword]', e.message);
+    res.redirect(`${errBase}&error=Something+went+wrong.+Please+try+again.`);
+  }
 });
 
 /* ---------------- ROUTES ---------------- */
