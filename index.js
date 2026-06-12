@@ -1552,8 +1552,20 @@ app.get('/results', requireAuth, async (req, res) => {
   }
   logs.sort((a, b) => (a.settledAt < b.settledAt ? 1 : -1)); // newest first
 
+  const lastUpdated = logs.length ? logs[0].settledAt : null;
+  const nextNoon = (() => {
+    const n = moment().tz(TIMEZONE);
+    const candidate = n.clone().startOf('day').hour(12);
+    return n.isBefore(candidate) ? candidate : candidate.add(1, 'day');
+  })();
+  const nextUpdateStr = nextNoon.format('D MMM YYYY, h:mm A z');
+
   let html = htmlHeader('Match Results - No Betting Zone');
   html += `<h2>Match Results</h2>`;
+  html += `<p style="font-size:11px;color:#6b7280;margin-top:-4px;margin-bottom:14px;">
+    ${lastUpdated ? `Last updated: <strong style="color:#9ca3af;">${lastUpdated}</strong> &nbsp;·&nbsp; ` : ''}
+    Next scheduled update: <strong style="color:#9ca3af;">${nextUpdateStr}</strong>
+  </p>`;
 
   if (!logs.length) {
     html += `<p style="color:#9ca3af;">No settled matches yet. Check back after results are in.</p>`;
