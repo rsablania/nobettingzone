@@ -86,7 +86,7 @@ const SOCCER_SPORT_KEYS = [
 
 // ── IN-MEMORY SNAPSHOT ───────────────────────────────────────────────────────
 // All fixture+odds data lives here. Populated from DB on startup, refreshed
-// once daily at 11 PM IST by the daily job. User requests NEVER call the API.
+// once daily at 12 noon IST by the daily job. User requests NEVER call the API.
 
 let fixtureSnapshot = [];   // array of Odds API event objects
 let snapshotMeta = null;    // { fetchedAt, creditsLeft }
@@ -100,7 +100,7 @@ async function loadFixturesFromDB() {
       snapshotMeta = { fetchedAt: stored.fetchedAt, creditsLeft: stored.creditsLeft };
       console.log(`[Snapshot] Loaded ${fixtureSnapshot.length} events from DB (fetched ${stored.fetchedAt})`);
     } else {
-      console.log('[Snapshot] No stored snapshot found — waiting for daily job at 11 PM IST.');
+      console.log('[Snapshot] No stored snapshot found — waiting for daily job at 12 noon IST.');
     }
   } catch (e) {
     console.error('[Snapshot] Failed to load from DB:', e.message);
@@ -141,7 +141,7 @@ async function getEventById(id) {
 }
 
 // ── DAILY SCHEDULER ───────────────────────────────────────────────────────────
-// Runs at 11 PM IST: settle finished matches, then fetch fresh fixtures+odds.
+// Runs at 12 noon IST: settle finished matches, then fetch fresh fixtures+odds.
 // Checks every minute; skips if already ran today.
 
 async function runDailyJob() {
@@ -157,7 +157,7 @@ async function runDailyJob() {
 setInterval(async () => {
   try {
     const now = moment().tz(TIMEZONE);
-    if (now.hour() !== 23) return;                                  // only run during 11 PM IST hour
+    if (now.hour() !== 12) return;                                  // only run during 12 noon IST hour
     const today = now.format('YYYY-MM-DD');
     const lastScheduled = await db.get('dailyJob:scheduledRun');   // not affected by manual admin runs
     if (lastScheduled === today) return;
@@ -238,7 +238,7 @@ async function sendLeaderboardEmail() {
 setInterval(async () => {
   try {
     const now = moment().tz(TIMEZONE);
-    if (now.hour() !== 23 || now.minute() !== 59) return;          // only at 11:59 PM IST
+    if (now.hour() !== 12 || now.minute() !== 59) return;          // only at 12:59 PM IST
     const today = now.format('YYYY-MM-DD');
     const lastSent = await db.get('leaderboardEmail:lastSent');
     if (lastSent === today) return;                                  // already sent today
@@ -441,7 +441,7 @@ async function settlePendingBets() {
   return summary;
 }
 
-// Settlement is triggered exclusively by the daily job at 11 PM IST.
+// Settlement is triggered exclusively by the daily job at 12 noon IST.
 // No auto-polling — every API call is accounted for.
 
 /* ---------------- HTML HELPERS ---------------- */
@@ -852,7 +852,7 @@ app.get('/', requireAuth, async (req, res) => {
 
     const leagueNames = Object.keys(byLeague).sort();
     if (!leagueNames.length) {
-      html += `<p style="color:#9ca3af;">No upcoming fixtures in today's snapshot. Check back after 11 PM IST.</p>`;
+      html += `<p style="color:#9ca3af;">No upcoming fixtures in today's snapshot. Check back after 12 noon IST.</p>`;
     } else {
       html += `<style>
         details.tournament { border:1px solid #1f2937; border-radius:10px; margin-bottom:10px; overflow:hidden; }
@@ -1532,7 +1532,7 @@ app.get('/rules', requireAuth, (req, res) => {
     <div class="card" style="margin-bottom:12px;">
       <div style="font-size:13px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">Settlement Timing</div>
       <ul style="margin:0;padding-left:18px;font-size:14px;line-height:1.8;color:#d1d5db;">
-        <li>Odds are refreshed every <strong style="color:#e5e7eb;">2 hours</strong>. Results are checked and settled once daily at <strong style="color:#e5e7eb;">11 PM IST</strong>.</li>
+        <li>Odds are refreshed every <strong style="color:#e5e7eb;">2 hours</strong>. Results are checked and settled once daily at <strong style="color:#e5e7eb;">12 noon IST</strong>.</li>
         <li>Bets are settled as soon as the result is confirmed by the data source.</li>
         <li>Settled results appear on the <a href="/results" style="color:#22c55e;">Results</a> page and your <a href="/summary" style="color:#22c55e;">My Stats</a> page.</li>
       </ul>
