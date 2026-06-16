@@ -1170,17 +1170,23 @@ app.get('/match', requireAuth, async (req, res) => {
       byPlayer[b.user].totalStake += b.stake;
       byPlayer[b.user].bets.push(b);
     }
-    const playerEntries = Object.entries(byPlayer);
+    const allPlayerEntries = Object.entries(byPlayer);
     const poolTotal = fixtureBets.reduce((s, b) => s + b.stake, 0);
 
+    // While betting is open, only show the current user's own row
+    const visibleEntries = bettingOpen
+      ? allPlayerEntries.filter(([userId]) => userId === req.session.userId)
+      : allPlayerEntries;
+
     html += `<hr style="border-color:#1f2937;margin:16px 0;">`;
-    if (playerEntries.length === 0) {
+    if (allPlayerEntries.length === 0) {
       html += `<p style="font-size:13px;color:#6b7280;">No predictions placed yet.</p>`;
     } else {
       html += `
         <p style="font-size:13px;color:#9ca3af;margin-bottom:8px;">
-          Predictions so far &nbsp;·&nbsp; <strong style="color:#e5e7eb;">${playerEntries.length}</strong> player${playerEntries.length !== 1 ? 's' : ''}
+          Predictions so far &nbsp;·&nbsp; <strong style="color:#e5e7eb;">${allPlayerEntries.length}</strong> player${allPlayerEntries.length !== 1 ? 's' : ''}
           &nbsp;·&nbsp; Pool: <strong style="color:#e5e7eb;">${poolTotal} pts</strong>
+          ${bettingOpen ? `&nbsp;·&nbsp; <span style="font-size:11px;color:#6b7280;">(others hidden until kick-off)</span>` : ''}
         </p>
         <table style="width:100%;border-collapse:collapse;font-size:13px;">
           <thead>
@@ -1192,17 +1198,20 @@ app.get('/match', requireAuth, async (req, res) => {
             </tr>
           </thead>
           <tbody>
-            ${playerEntries.map(([userId, data]) => {
-              const isMe = userId === req.session.userId;
-              const selLabel = labelMap[data.selection] || data.selection;
-              const wavgOdds = (data.bets.reduce((s, b) => s + b.lockedOdds * b.stake, 0) / data.totalStake).toFixed(2);
-              return `<tr style="border-bottom:1px solid #1f2937;${isMe ? 'color:#22c55e;' : ''}">
-                <td style="padding:8px 4px;">${userId}${isMe ? ' ★' : ''}</td>
-                <td style="padding:8px 4px;">${selLabel}</td>
-                <td style="padding:8px 4px;text-align:right;">${data.totalStake}</td>
-                <td style="padding:8px 4px;text-align:right;">${wavgOdds}x</td>
-              </tr>`;
-            }).join('')}
+            ${visibleEntries.length === 0
+              ? `<tr><td colspan="4" style="padding:10px 4px;color:#6b7280;font-size:12px;">You haven't placed a bet on this match yet.</td></tr>`
+              : visibleEntries.map(([userId, data]) => {
+                  const isMe = userId === req.session.userId;
+                  const selLabel = labelMap[data.selection] || data.selection;
+                  const wavgOdds = (data.bets.reduce((s, b) => s + b.lockedOdds * b.stake, 0) / data.totalStake).toFixed(2);
+                  return `<tr style="border-bottom:1px solid #1f2937;${isMe ? 'color:#22c55e;' : ''}">
+                    <td style="padding:8px 4px;">${userId}${isMe ? ' ★' : ''}</td>
+                    <td style="padding:8px 4px;">${selLabel}</td>
+                    <td style="padding:8px 4px;text-align:right;">${data.totalStake}</td>
+                    <td style="padding:8px 4px;text-align:right;">${wavgOdds}x</td>
+                  </tr>`;
+                }).join('')
+            }
           </tbody>
         </table>
       `;
