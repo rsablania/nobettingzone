@@ -127,29 +127,80 @@ async function fetchAndStoreFixtures() {
     }
   }
 
-  // Odds sanity pass — for each event, validate odds. If glitchy, fall back to
-  // the previously stored bookmaker data for that event (keeps last known good odds).
+  // ── Odds sanity pass ──────────────────────────────────────────────────────
+  // 1. Reject implied-probability failures (keep previous or blank).
+  // 2. For any outcome that moves >50% vs the current snapshot:
+  //    - First occurrence  → hold in DB as "pendingOdds:<id>", keep old odds.
+  //    - Second consecutive occurrence → accept (genuine market move), clear pending.
+  //    - Variation disappears between updates → accept new (normal) odds, clear pending.
   const prevByEventId = {};
   for (const ev of fixtureSnapshot) prevByEventId[ev.id] = ev;
 
-  let fallbackCount = 0;
-  const validated = all.map(ev => {
-    const odds = extractOdds(ev);
-    if (odds !== null) return ev; // odds are clean — use as-is
-    // Odds are glitchy — try to keep previous bookmaker data
+  // Returns true if any outcome price changed by more than 50% vs prevOdds
+  function hasLargeVariation(newOdds, prevOdds) {
+    if (!prevOdds) return false;
+    for (const no of newOdds) {
+      const po = prevOdds.find(o => o.value === no.value);
+      if (!po) continue;
+      const change = Math.abs(parseFloat(no.odd) - parseFloat(po.odd)) / parseFloat(po.odd);
+      if (change > 0.50) return true;
+    }
+    return false;
+  }
+
+  let fallbackCount = 0, pendingCount = 0, acceptedPendingCount = 0;
+  const validated = await Promise.all(all.map(async ev => {
+    const tag = `"${ev.home_team} vs ${ev.away_team}"`;
+    const newOdds = extractOdds(ev);
+
+    // Step 1 — implied probability check
+    if (newOdds === null) {
+      const prev = prevByEventId[ev.id];
+      const prevOdds = prev ? extractOdds(prev) : null;
+      if (prevOdds) {
+        fallbackCount++;
+        console.warn(`[OddsValidation] Bad implied-prob for ${tag} — keeping previous odds`);
+        return { ...ev, bookmakers: prev.bookmakers };
+      }
+      console.warn(`[OddsValidation] Bad implied-prob for ${tag} — no fallback available`);
+      return { ...ev, bookmakers: [] };
+    }
+
+    // Step 2 — large variation check (>50% on any outcome vs snapshot)
     const prev = prevByEventId[ev.id];
     const prevOdds = prev ? extractOdds(prev) : null;
-    if (prevOdds) {
-      fallbackCount++;
-      console.warn(`[OddsValidation] Glitchy odds for "${ev.home_team} vs ${ev.away_team}" — keeping previous odds`);
-      return { ...ev, bookmakers: prev.bookmakers };
+
+    if (prevOdds && hasLargeVariation(newOdds, prevOdds)) {
+      const pendingKey = `pendingOdds:${ev.id}`;
+      const existing = await db.get(pendingKey);
+      if (existing) {
+        // Second consecutive update with large variation — accept it
+        await db.delete(pendingKey);
+        acceptedPendingCount++;
+        console.log(`[OddsVariation] Accepted persistent large move for ${tag}`);
+        return ev;
+      } else {
+        // First occurrence — hold, keep old odds
+        await db.set(pendingKey, { bookmakers: ev.bookmakers, detectedAt: Date.now() });
+        pendingCount++;
+        console.warn(`[OddsVariation] >50% shift detected for ${tag} — holding for next update`);
+        return { ...ev, bookmakers: prev.bookmakers };
+      }
     }
-    // No previous data either — store event without bookmaker odds (will show — on UI)
-    console.warn(`[OddsValidation] Glitchy odds for "${ev.home_team} vs ${ev.away_team}" — no fallback available`);
-    return { ...ev, bookmakers: [] };
-  });
+
+    // Odds are clean and within normal variation — accept; clear any stale pending entry
+    const pendingKey = `pendingOdds:${ev.id}`;
+    const stale = await db.get(pendingKey);
+    if (stale) {
+      await db.delete(pendingKey);
+      console.log(`[OddsVariation] Variation resolved for ${tag} — cleared pending`);
+    }
+    return ev;
+  }));
 
   if (fallbackCount > 0) console.log(`[OddsValidation] ${fallbackCount} event(s) fell back to previous odds`);
+  if (pendingCount > 0) console.log(`[OddsVariation] ${pendingCount} event(s) held pending (>50% shift)`);
+  if (acceptedPendingCount > 0) console.log(`[OddsVariation] ${acceptedPendingCount} event(s) accepted after persistent shift`);
 
   const fetchedAt = moment().tz(TIMEZONE).format('DD MMM YYYY, HH:mm z');
   const stored = { events: validated, fetchedAt, creditsLeft };
