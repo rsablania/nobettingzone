@@ -274,17 +274,16 @@ setInterval(async () => {
 }, 60 * 1000);
 
 // ── ODDS VALIDATION ───────────────────────────────────────────────────────────
-// Bounds for individual odds and implied probability sum (overround)
-const ODDS_MIN = 1.01;
-const ODDS_MAX = 50;
-const IMPLIED_PROB_MIN = 0.85;  // sum of 1/H + 1/D + 1/A
+// Validate via implied probability sum (overround) only.
+// Sum of 1/H + 1/D + 1/A should sit in a realistic bookmaker range.
+const IMPLIED_PROB_MIN = 0.85;
 const IMPLIED_PROB_MAX = 1.50;
 
 function validateOddsList(outcomes) {
   if (!outcomes || outcomes.length !== 3) return false;
   for (const o of outcomes) {
     const p = parseFloat(o.odd);
-    if (!isFinite(p) || p < ODDS_MIN || p > ODDS_MAX) return false;
+    if (!isFinite(p) || p <= 0) return false;
   }
   const impliedSum = outcomes.reduce((s, o) => s + 1 / parseFloat(o.odd), 0);
   return impliedSum >= IMPLIED_PROB_MIN && impliedSum <= IMPLIED_PROB_MAX;
