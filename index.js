@@ -127,12 +127,36 @@ async function fetchAndStoreFixtures() {
     }
   }
 
+  // Odds sanity pass — for each event, validate odds. If glitchy, fall back to
+  // the previously stored bookmaker data for that event (keeps last known good odds).
+  const prevByEventId = {};
+  for (const ev of fixtureSnapshot) prevByEventId[ev.id] = ev;
+
+  let fallbackCount = 0;
+  const validated = all.map(ev => {
+    const odds = extractOdds(ev);
+    if (odds !== null) return ev; // odds are clean — use as-is
+    // Odds are glitchy — try to keep previous bookmaker data
+    const prev = prevByEventId[ev.id];
+    const prevOdds = prev ? extractOdds(prev) : null;
+    if (prevOdds) {
+      fallbackCount++;
+      console.warn(`[OddsValidation] Glitchy odds for "${ev.home_team} vs ${ev.away_team}" — keeping previous odds`);
+      return { ...ev, bookmakers: prev.bookmakers };
+    }
+    // No previous data either — store event without bookmaker odds (will show — on UI)
+    console.warn(`[OddsValidation] Glitchy odds for "${ev.home_team} vs ${ev.away_team}" — no fallback available`);
+    return { ...ev, bookmakers: [] };
+  });
+
+  if (fallbackCount > 0) console.log(`[OddsValidation] ${fallbackCount} event(s) fell back to previous odds`);
+
   const fetchedAt = moment().tz(TIMEZONE).format('DD MMM YYYY, HH:mm z');
-  const stored = { events: all, fetchedAt, creditsLeft };
+  const stored = { events: validated, fetchedAt, creditsLeft };
   await db.set('snapshot:fixtures', stored);
-  fixtureSnapshot = all;
+  fixtureSnapshot = validated;
   snapshotMeta = { fetchedAt, creditsLeft };
-  console.log(`[DailyJob] Snapshot stored: ${all.length} total events. Credits remaining: ${creditsLeft}`);
+  console.log(`[DailyJob] Snapshot stored: ${validated.length} total events. Credits remaining: ${creditsLeft}`);
 }
 
 // Read a single event from the in-memory snapshot (no API call)
@@ -249,6 +273,23 @@ setInterval(async () => {
   }
 }, 60 * 1000);
 
+// ── ODDS VALIDATION ───────────────────────────────────────────────────────────
+// Bounds for individual odds and implied probability sum (overround)
+const ODDS_MIN = 1.01;
+const ODDS_MAX = 50;
+const IMPLIED_PROB_MIN = 0.85;  // sum of 1/H + 1/D + 1/A
+const IMPLIED_PROB_MAX = 1.50;
+
+function validateOddsList(outcomes) {
+  if (!outcomes || outcomes.length !== 3) return false;
+  for (const o of outcomes) {
+    const p = parseFloat(o.odd);
+    if (!isFinite(p) || p < ODDS_MIN || p > ODDS_MAX) return false;
+  }
+  const impliedSum = outcomes.reduce((s, o) => s + 1 / parseFloat(o.odd), 0);
+  return impliedSum >= IMPLIED_PROB_MIN && impliedSum <= IMPLIED_PROB_MAX;
+}
+
 // Extract h2h odds from an event → [{ value:'Home'|'Draw'|'Away', odd:'1.90' }]
 function extractOdds(event) {
   if (!event?.bookmakers?.length) return null;
@@ -262,7 +303,9 @@ function extractOdds(event) {
     return { value, odd: Number(o.price).toFixed(2) };
   });
   outcomes.sort((a, b) => order[a.value] - order[b.value]);
-  return outcomes.length === 3 ? outcomes : null;
+  if (outcomes.length !== 3) return null;
+  if (!validateOddsList(outcomes)) return null;
+  return outcomes;
 }
 
 // Determine match result from Odds API score object
