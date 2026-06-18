@@ -1192,8 +1192,9 @@ app.get('/match', requireAuth, async (req, res) => {
       oddsToShow.forEach(o => {
         html += `
           <div style="margin-bottom:8px;">
-            <label style="display:flex;align-items:center;gap:10px;background:#111827;border:1px solid #1f2937;border-radius:8px;padding:10px 12px;cursor:pointer;">
-              <input type="radio" name="selection" value="${o.value}" required style="accent-color:#22c55e;width:18px;height:18px;">
+            <label id="sel-label-${o.value}" style="display:flex;align-items:center;gap:10px;background:#111827;border:1px solid #1f2937;border-radius:8px;padding:10px 12px;cursor:pointer;">
+              <input type="radio" name="selection" value="${o.value}" required style="accent-color:#22c55e;width:18px;height:18px;"
+                onchange="document.querySelectorAll('[id^=sel-label-]').forEach(function(l){l.style.borderColor='#1f2937';});document.getElementById('sel-label-${o.value}').style.borderColor='#22c55e';">
               <span style="flex:1;font-size:14px;">${labelMap[o.value] || o.value}</span>
               <span style="font-size:13px;font-weight:bold;color:#22c55e;">${o.odd}</span>
             </label>
