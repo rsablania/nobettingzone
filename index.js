@@ -1577,7 +1577,7 @@ app.get('/summary', requireAuth, async (req, res) => {
         : `<span style="color:#f59e0b;">Pending settlement</span>`;
 
       // Tranche breakdown rows
-      const selectionMap2 = { Home: homeTeam, Draw: 'Draw', Away: awayTeam };
+      const selectionMap2 = { Home: first.homeTeam, Draw: 'Draw', Away: first.awayTeam };
       const trancheRows = tranches.map((t, i) => `
         <tr style="border-top:1px solid #1f2937;">
           <td style="padding:3px 0;color:#9ca3af;">#${i + 1}</td>
