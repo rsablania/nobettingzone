@@ -2053,21 +2053,6 @@ app.post('/admin/change-password', async (req, res) => {
   res.redirect('/admin?pwMsg=ok');
 });
 
-// ADMIN – one-time production KV seed (remove after use)
-app.post('/admin/seed-kv', async (req, res) => {
-  const { password, pairs } = req.body || {};
-  const adminPassword = await getAdminPassword();
-  if (password !== adminPassword) return res.status(403).json({ error: 'Forbidden' });
-  if (!Array.isArray(pairs) || pairs.length === 0) return res.status(400).json({ error: 'pairs required' });
-  let inserted = 0;
-  for (const { key, value } of pairs) {
-    if (!key) continue;
-    await db.set(key, value);
-    inserted++;
-  }
-  res.json({ ok: true, inserted });
-});
-
 // ADMIN – manual settle a specific fixture
 app.post('/admin/manual-settle', async (req, res) => {
   if (!req.session.isAdmin) return res.redirect('/admin');
