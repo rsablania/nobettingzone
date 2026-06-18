@@ -98,7 +98,7 @@ async function fetchResultsFromOddsApi() {
 const TIMEZONE = 'Asia/Kolkata';
 
 app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
+app.use(express.json({ limit: '20mb' }));
 
 // PostgreSQL-backed session store — works in both dev and production
 const PgSession = connectPgSimple(session);
