@@ -473,76 +473,66 @@ async function settlePendingBets() {
   for (const { result, bets } of Object.values(byFixture)) {
     const totalStaked = bets.reduce((a, b) => a + b.stake, 0);
 
-    // ── Step 1: group tranches by user ───────────────────────────────────────
-    const userMap = {};
-    for (const bet of bets) {
-      const won = bet.selection === result;
-      if (!userMap[bet.user]) userMap[bet.user] = { tranches: [], totalStake: 0, totalGross: 0, won };
-      userMap[bet.user].tranches.push(bet);
-      userMap[bet.user].totalStake += bet.stake;
-      if (won) userMap[bet.user].totalGross += bet.stake * parseFloat(bet.lockedOdds);
-    }
-
-    // ── Step 2: pari-mutuel share, then cap each winner at their own implied gross ──
-    // sumGross = total of (stake × lockedOdds) across all winning tranches
-    const sumGross = Object.values(userMap)
-      .filter(u => u.won)
-      .reduce((s, u) => s + u.totalGross, 0);
+    // ── Step 1: tranche-level pari-mutuel, each winning tranche capped at its own gross ──
+    const sumGross = bets.reduce((s, b) =>
+      b.selection === result ? s + b.stake * parseFloat(b.lockedOdds) : s, 0);
 
     let totalWinnerPayout = 0;
-    for (const u of Object.values(userMap).filter(u => u.won)) {
-      const parimutuel = sumGross > 0 ? (u.totalGross / sumGross) * totalStaked : 0;
-      // Cap = sum(tranche_stake × tranche_lockedOdds) = u.totalGross
-      u.finalPayout = Math.round(Math.min(parimutuel, u.totalGross) * 10) / 10;
-      totalWinnerPayout += u.finalPayout;
-    }
+    const tranchePayout = bets.map(b => {
+      if (b.selection !== result) return 0;
+      const gross = b.stake * parseFloat(b.lockedOdds);
+      const payout = Math.round(Math.min(sumGross > 0 ? (gross / sumGross) * totalStaked : 0, gross) * 10) / 10;
+      totalWinnerPayout += payout;
+      return payout;
+    });
 
-    // ── Step 3: undistributed pool → back to losers proportionally by stake ──
+    // ── Step 2: undistributed pool → losers proportionally by stake ──────────
     const undistributed = Math.round((totalStaked - totalWinnerPayout) * 10) / 10;
-    const loserUsers = Object.values(userMap).filter(u => !u.won);
-    const totalLoserStake = loserUsers.reduce((s, u) => s + u.totalStake, 0);
-    for (const u of loserUsers) {
-      u.finalPayout = totalLoserStake > 0
-        ? Math.round(undistributed * (u.totalStake / totalLoserStake) * 10) / 10
-        : 0;
-    }
-
-    // ── Step 4: distribute user payout back to tranches proportionally by stake ──
-    for (const u of Object.values(userMap)) {
-      for (const bet of u.tranches) {
-        const tranchePayout = Math.round(u.finalPayout * (bet.stake / u.totalStake) * 10) / 10;
-        bet.status = u.won ? 'WON' : 'LOST';
-        bet.result = result;
-        bet.netPoints = Math.round((tranchePayout - bet.stake) * 10) / 10;
+    const totalLoserStake = bets.reduce((s, b) => b.selection !== result ? s + b.stake : s, 0);
+    for (let i = 0; i < bets.length; i++) {
+      if (bets[i].selection !== result) {
+        tranchePayout[i] = totalLoserStake > 0
+          ? Math.round(undistributed * (bets[i].stake / totalLoserStake) * 10) / 10 : 0;
       }
     }
 
-    // ── Step 5: update user balances and build settlement log ────────────────
-    const logEntries = [];
-    for (const u of Object.values(userMap)) {
-      const userNet = Math.round(u.tranches.reduce((s, t) => s + t.netPoints, 0) * 10) / 10;
+    // ── Step 3: set status and netPoints per tranche ──────────────────────────
+    for (let i = 0; i < bets.length; i++) {
+      bets[i].status = bets[i].selection === result ? 'WON' : 'LOST';
+      bets[i].result = result;
+      bets[i].netPoints = Math.round((tranchePayout[i] - bets[i].stake) * 10) / 10;
+    }
+
+    // ── Step 4: accumulate net per user then update balances ─────────────────
+    const userNetMap = {};
+    for (const bet of bets) {
+      userNetMap[bet.user] = Math.round(((userNetMap[bet.user] || 0) + bet.netPoints) * 10) / 10;
+    }
+    for (const [userId, netPts] of Object.entries(userNetMap)) {
       try {
-        const userRec = await getUserById(u.tranches[0].user.toLowerCase());
+        const userRec = await getUserById(userId.toLowerCase());
         if (userRec) {
-          userRec.totalNetPoints = Math.round((userRec.totalNetPoints + userNet) * 10) / 10;
+          userRec.totalNetPoints = Math.round((userRec.totalNetPoints + netPts) * 10) / 10;
           await saveUser(userRec);
         }
       } catch (e) {
-        summary.errors.push(`User update error for ${u.tranches[0].user}: ${e.message}`);
+        summary.errors.push(`User update error for ${userId}: ${e.message}`);
       }
-      for (const bet of u.tranches) {
-        const tranchePayout = Math.round(u.finalPayout * (bet.stake / u.totalStake) * 10) / 10;
-        logEntries.push({
-          user: bet.user,
-          selection: bet.selection,
-          stake: bet.stake,
-          lockedOdds: bet.lockedOdds,
-          status: bet.status,
-          finalPayout: tranchePayout,
-          netPoints: bet.netPoints,
-        });
-        summary.settled++;
-      }
+    }
+
+    // ── Step 5: build settlement log ─────────────────────────────────────────
+    const logEntries = [];
+    for (let i = 0; i < bets.length; i++) {
+      logEntries.push({
+        user: bets[i].user,
+        selection: bets[i].selection,
+        stake: bets[i].stake,
+        lockedOdds: bets[i].lockedOdds,
+        status: bets[i].status,
+        finalPayout: tranchePayout[i],
+        netPoints: bets[i].netPoints,
+      });
+      summary.settled++;
     }
     changed = true;
 
@@ -1163,10 +1153,10 @@ app.get('/match', requireAuth, async (req, res) => {
           <div style="font-size:12px;color:${myRemaining === 0 || !bettingOpen ? '#22c55e' : '#fbbf24'};margin-bottom:8px;">
             ${myRemaining === 0 || !bettingOpen ? '✓ Your prediction (locked)' : `✏️ Your prediction — ${myRemaining} pts remaining`}
           </div>
-          <div style="font-size:14px;font-weight:700;margin-bottom:8px;">${labelMap[mySelection] || mySelection}</div>
           <table style="width:100%;border-collapse:collapse;font-size:12px;">
             <thead><tr style="color:#6b7280;font-size:11px;">
               <th style="text-align:left;padding:3px 0;">Tranche</th>
+              <th style="text-align:left;padding:3px 4px;">Pick</th>
               <th style="text-align:right;padding:3px 4px;">Stake</th>
               <th style="text-align:right;padding:3px 0;">Odds locked</th>
             </tr></thead>
@@ -1174,6 +1164,7 @@ app.get('/match', requireAuth, async (req, res) => {
               ${myBets.map((b, i) => `
                 <tr style="border-top:1px solid #1f2937;">
                   <td style="padding:4px 0;color:#9ca3af;">#${i + 1}</td>
+                  <td style="padding:4px 4px;color:#e5e7eb;">${labelMap[b.selection] || b.selection}</td>
                   <td style="padding:4px 4px;text-align:right;color:#a78bfa;">${b.stake} pts</td>
                   <td style="padding:4px 0;text-align:right;color:#22c55e;">${b.lockedOdds}x</td>
                 </tr>`).join('')}
@@ -1199,13 +1190,11 @@ app.get('/match', requireAuth, async (req, res) => {
           <p style="margin-bottom:6px;">${myBets.length > 0 ? 'Add another tranche (1X2):' : 'Pick result (1X2):'}</p>
       `;
       oddsToShow.forEach(o => {
-        const isLocked = mySelection !== null && o.value !== mySelection;
-        const isSelected = mySelection === o.value;
         html += `
-          <div style="margin-bottom:8px;${isLocked ? 'opacity:0.35;pointer-events:none;' : ''}">
-            <label style="display:flex;align-items:center;gap:10px;background:#111827;border:1px solid ${isSelected ? '#22c55e' : '#1f2937'};border-radius:8px;padding:10px 12px;cursor:${isLocked ? 'not-allowed' : 'pointer'};">
-              <input type="radio" name="selection" value="${o.value}" ${isSelected || (!mySelection && o.value === oddsToShow[0].value) ? '' : ''} ${isSelected ? 'checked' : ''} ${isLocked ? 'disabled' : ''} required style="accent-color:#22c55e;width:18px;height:18px;">
-              <span style="flex:1;font-size:14px;">${labelMap[o.value] || o.value}${isLocked ? ' <span style="font-size:11px;color:#6b7280;">(locked out)</span>' : ''}</span>
+          <div style="margin-bottom:8px;">
+            <label style="display:flex;align-items:center;gap:10px;background:#111827;border:1px solid #1f2937;border-radius:8px;padding:10px 12px;cursor:pointer;">
+              <input type="radio" name="selection" value="${o.value}" required style="accent-color:#22c55e;width:18px;height:18px;">
+              <span style="flex:1;font-size:14px;">${labelMap[o.value] || o.value}</span>
               <span style="font-size:13px;font-weight:bold;color:#22c55e;">${o.odd}</span>
             </label>
           </div>
@@ -1377,14 +1366,9 @@ app.post('/bet', requireAuth, async (req, res) => {
   }
   const stake = stakeInput;
 
-  // Enforce same selection as existing tranches
+  // Enforce 100-pt cap per fixture
   const bets = await getBets();
   const existingTranches = bets.filter(b => b.user === user.userId && b.fixtureId === eventId);
-  if (existingTranches.length > 0 && existingTranches[0].selection !== selection) {
-    return res.status(400).send(`You must bet on the same outcome as your existing tranches (${existingTranches[0].selection}).`);
-  }
-
-  // Enforce 100-pt cap per fixture
   const alreadyStaked = existingTranches.reduce((s, b) => s + b.stake, 0);
   if (alreadyStaked + stake > 100) {
     return res.status(400).send(`Only ${100 - alreadyStaked} pts remaining for this match.`);
@@ -1558,9 +1542,11 @@ app.get('/summary', requireAuth, async (req, res) => {
         : `<span style="color:#f59e0b;">Pending settlement</span>`;
 
       // Tranche breakdown rows
+      const selectionMap2 = { Home: homeTeam, Draw: 'Draw', Away: awayTeam };
       const trancheRows = tranches.map((t, i) => `
         <tr style="border-top:1px solid #1f2937;">
           <td style="padding:3px 0;color:#9ca3af;">#${i + 1}</td>
+          <td style="padding:3px 4px;color:#e5e7eb;">${selectionMap2[t.selection] || t.selection}</td>
           <td style="padding:3px 4px;text-align:right;color:#a78bfa;">${t.stake} pts</td>
           <td style="padding:3px 0;text-align:right;color:#22c55e;">${t.lockedOdds}x</td>
         </tr>`).join('');
@@ -1575,11 +1561,12 @@ app.get('/summary', requireAuth, async (req, res) => {
           <span style="font-size:11px;font-weight:bold;color:${statusColor};border:1px solid ${statusColor};border-radius:4px;padding:2px 6px;white-space:nowrap;margin-left:8px;">${status}</span>
         </div>
         <div style="font-size:12px;color:#9ca3af;margin-top:8px;">
-          Pick: <strong style="color:#e5e7eb;">${selLabel}</strong> &nbsp;·&nbsp; Total staked: <strong style="color:#a78bfa;">${totalStake} pts</strong>
+          Total staked: <strong style="color:#a78bfa;">${totalStake} pts</strong>
         </div>
         <table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:6px;">
           <thead><tr style="color:#6b7280;">
             <th style="text-align:left;padding:2px 0;">Tranche</th>
+            <th style="text-align:left;padding:2px 4px;">Pick</th>
             <th style="text-align:right;padding:2px 4px;">Stake</th>
             <th style="text-align:right;padding:2px 0;">Odds</th>
           </tr></thead>
@@ -1619,7 +1606,7 @@ app.get('/rules', requireAuth, (req, res) => {
         <li>Pick one outcome and choose a stake: <strong style="color:#a78bfa;">20 / 40 / 60 / 80 / 100 points</strong>.</li>
         <li>Betting closes <strong style="color:#e5e7eb;">10 minutes before kick-off</strong>. No changes after that.</li>
         <li>You can stake up to <strong style="color:#e5e7eb;">100 points per match</strong> in multiple tranches — e.g. 40 pts now, then 60 pts later. Each tranche must be a multiple of 20 pts (20 / 40 / 60 / 80 / 100) and locks in the odds at the time it is placed.</li>
-        <li>All tranches on a match must be on the <strong style="color:#e5e7eb;">same outcome</strong>. Betting closes 10 minutes before kick-off — no new tranches after that.</li>
+        <li>Each tranche can be on <strong style="color:#e5e7eb;">any outcome</strong> — you can spread your stake across different results if you wish. Betting closes 10 minutes before kick-off — no new tranches after that.</li>
       </ul>
     </div>
 
@@ -2044,64 +2031,55 @@ app.post('/admin/manual-settle', async (req, res) => {
   const bets = allBets.filter(b => b.fixtureId === fixtureId && b.status === 'PENDING');
   if (!bets.length) return res.redirect('/admin?manualMsg=No+pending+bets+for+that+fixture.');
 
-  // Settlement — same logic as automated engine (capped pari-mutuel + loser refund)
+  // Settlement — tranche-level pari-mutuel, each winning tranche capped at its own gross
   const totalStaked = bets.reduce((a, b) => a + b.stake, 0);
 
-  // Step 1: group tranches by user
-  const userMap = {};
-  for (const bet of bets) {
-    const won = bet.selection === result;
-    if (!userMap[bet.user]) userMap[bet.user] = { tranches: [], totalStake: 0, totalGross: 0, won };
-    userMap[bet.user].tranches.push(bet);
-    userMap[bet.user].totalStake += bet.stake;
-    if (won) userMap[bet.user].totalGross += bet.stake * parseFloat(bet.lockedOdds);
-  }
+  const sumGross = bets.reduce((s, b) =>
+    b.selection === result ? s + b.stake * parseFloat(b.lockedOdds) : s, 0);
 
-  // Step 2: pari-mutuel share, capped at user's own implied gross
-  const sumGross = Object.values(userMap).filter(u => u.won).reduce((s, u) => s + u.totalGross, 0);
   let totalWinnerPayout = 0;
-  for (const u of Object.values(userMap).filter(u => u.won)) {
-    const parimutuel = sumGross > 0 ? (u.totalGross / sumGross) * totalStaked : 0;
-    u.finalPayout = Math.round(Math.min(parimutuel, u.totalGross) * 10) / 10;
-    totalWinnerPayout += u.finalPayout;
-  }
+  const tranchePayout = bets.map(b => {
+    if (b.selection !== result) return 0;
+    const gross = b.stake * parseFloat(b.lockedOdds);
+    const payout = Math.round(Math.min(sumGross > 0 ? (gross / sumGross) * totalStaked : 0, gross) * 10) / 10;
+    totalWinnerPayout += payout;
+    return payout;
+  });
 
-  // Step 3: undistributed → back to losers proportionally
   const undistributed = Math.round((totalStaked - totalWinnerPayout) * 10) / 10;
-  const loserUsers = Object.values(userMap).filter(u => !u.won);
-  const totalLoserStake = loserUsers.reduce((s, u) => s + u.totalStake, 0);
-  for (const u of loserUsers) {
-    u.finalPayout = totalLoserStake > 0
-      ? Math.round(undistributed * (u.totalStake / totalLoserStake) * 10) / 10
-      : 0;
-  }
-
-  // Step 4: distribute payout back to individual tranches by stake
-  for (const u of Object.values(userMap)) {
-    for (const bet of u.tranches) {
-      const tranchePayout = Math.round(u.finalPayout * (bet.stake / u.totalStake) * 10) / 10;
-      bet.status = u.won ? 'WON' : 'LOST';
-      bet.result = result;
-      bet.netPoints = Math.round((tranchePayout - bet.stake) * 10) / 10;
+  const totalLoserStake = bets.reduce((s, b) => b.selection !== result ? s + b.stake : s, 0);
+  for (let i = 0; i < bets.length; i++) {
+    if (bets[i].selection !== result) {
+      tranchePayout[i] = totalLoserStake > 0
+        ? Math.round(undistributed * (bets[i].stake / totalLoserStake) * 10) / 10 : 0;
     }
   }
 
-  // Step 5: update user balances and build log
-  const logEntries = [];
-  for (const u of Object.values(userMap)) {
-    const userNet = Math.round(u.tranches.reduce((s, t) => s + t.netPoints, 0) * 10) / 10;
+  for (let i = 0; i < bets.length; i++) {
+    bets[i].status = bets[i].selection === result ? 'WON' : 'LOST';
+    bets[i].result = result;
+    bets[i].netPoints = Math.round((tranchePayout[i] - bets[i].stake) * 10) / 10;
+  }
+
+  const userNetMap = {};
+  for (const bet of bets) {
+    userNetMap[bet.user] = Math.round(((userNetMap[bet.user] || 0) + bet.netPoints) * 10) / 10;
+  }
+  for (const [uid, netPts] of Object.entries(userNetMap)) {
     try {
-      const user = await getUserById(u.tranches[0].user.toLowerCase());
+      const user = await getUserById(uid.toLowerCase());
       if (user) {
-        user.totalNetPoints = Math.round((user.totalNetPoints + userNet) * 10) / 10;
+        user.totalNetPoints = Math.round((user.totalNetPoints + netPts) * 10) / 10;
         await saveUser(user);
       }
     } catch (e) { /* ignore per-user errors */ }
-    for (const bet of u.tranches) {
-      const tranchePayout = Math.round(u.finalPayout * (bet.stake / u.totalStake) * 10) / 10;
-      logEntries.push({ user: bet.user, selection: bet.selection, stake: bet.stake,
-        lockedOdds: bet.lockedOdds, status: bet.status, finalPayout: tranchePayout, netPoints: bet.netPoints });
-    }
+  }
+
+  const logEntries = [];
+  for (let i = 0; i < bets.length; i++) {
+    logEntries.push({ user: bets[i].user, selection: bets[i].selection, stake: bets[i].stake,
+      lockedOdds: bets[i].lockedOdds, status: bets[i].status,
+      finalPayout: tranchePayout[i], netPoints: bets[i].netPoints });
   }
 
   // Write updated bets back to DB (allBets mutated in-place above)
