@@ -3,6 +3,8 @@ const axios = require('axios');
 const moment = require('moment-timezone');
 const Database = require('@replit/database');
 const session = require('express-session');
+const connectPgSimple = require('connect-pg-simple');
+const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const { Resend } = require('resend');
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -52,31 +54,29 @@ const TIMEZONE = 'Asia/Kolkata';
 
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
-// Persistent session store backed by @replit/database
-// Prevents logout when the container sleeps/restarts
-const SessionStore = session.Store;
-class ReplitDbSessionStore extends SessionStore {
-  async get(sid, cb) {
-    try { cb(null, (await db.get(`sess:${sid}`)) || null); }
-    catch (e) { cb(e); }
-  }
-  async set(sid, sess, cb) {
-    try { await db.set(`sess:${sid}`, sess); cb(null); }
-    catch (e) { cb(e); }
-  }
-  async destroy(sid, cb) {
-    try { await db.delete(`sess:${sid}`); cb(null); }
-    catch (e) { cb(e); }
-  }
-}
+
+// PostgreSQL-backed session store — works in both dev and production
+const PgSession = connectPgSimple(session);
+const pgPool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+// Ensure sessions table exists
+pgPool.query(`
+  CREATE TABLE IF NOT EXISTS "session" (
+    "sid" varchar NOT NULL COLLATE "default",
+    "sess" json NOT NULL,
+    "expire" timestamp(6) NOT NULL,
+    CONSTRAINT "session_pkey" PRIMARY KEY ("sid")
+  );
+  CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire");
+`).catch(e => console.error('[Session] Table init error:', e.message));
 
 app.use(session({
   secret: process.env.SESSION_SECRET || 'dev-secret',
   resave: false,
   saveUninitialized: false,
   rolling: true,
-  store: new ReplitDbSessionStore(),
-  cookie: { maxAge: 30 * 24 * 60 * 60 * 1000 }   // 30 days, survives container restarts
+  store: new PgSession({ pool: pgPool, tableName: 'session' }),
+  cookie: { maxAge: 30 * 24 * 60 * 60 * 1000 }   // 30 days
 }));
 
 // All soccer sport keys on The Odds API free plan

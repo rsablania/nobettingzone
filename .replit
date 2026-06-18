@@ -40,3 +40,8 @@ externalPort = 3000
 
 [nix]
 channel = "stable-25_05"
+
+[userenv]
+
+[userenv.production]
+REPLIT_DB_URL = "https://kv.replit.com/v0/eyJhbGciOiJIUzUxMiIsImlzcyI6InJlcGx2aXNvciIsImtpZCI6InByb2Q6MSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJyZXBsdmlzb3IiLCJleHAiOjE3ODIwNDcwNDksImlhdCI6MTc4MTc1OTA0OSwiZGF0YWJhc2VfaWQiOiI2ZjZkODdiNC03YThhLTQwMTYtOWVmYy03NjJiM2YwZjhhZTQifQ.2UHp0uWAKg0LQ-aBleCQXlt_EuliRF3oJU4j3AbVroDgLVpYkNLW1VXANh8xUyCmy6IKKyxJOyNPuiX40NLsdA"
