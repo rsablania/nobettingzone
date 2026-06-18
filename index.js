@@ -32,9 +32,10 @@ class PgKV {
     await this.pool.query('DELETE FROM kv_store WHERE key = $1', [key]);
   }
   async list(prefix) {
-    const safe = prefix.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+    // Use '!' as escape character — simple and single-char
+    const safe = prefix.replace(/!/g, '!!').replace(/%/g, '!%').replace(/_/g, '!_');
     const { rows } = await this.pool.query(
-      "SELECT key FROM kv_store WHERE key LIKE $1 ESCAPE '\\\\'",
+      "SELECT key FROM kv_store WHERE key LIKE $1 ESCAPE '!'",
       [safe + '%']
     );
     return rows.map(r => r.key);
