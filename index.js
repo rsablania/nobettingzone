@@ -1311,28 +1311,22 @@ app.get('/match', requireAuth, async (req, res) => {
       html += `<p style="font-size:13px;color:#6b7280;">Betting closed for this match.</p>`;
     }
 
-    // Predictions so far table — grouped by player
-    const byPlayer = {};
-    for (const b of fixtureBets) {
-      if (!byPlayer[b.user]) byPlayer[b.user] = { selection: b.selection, totalStake: 0, bets: [] };
-      byPlayer[b.user].totalStake += b.stake;
-      byPlayer[b.user].bets.push(b);
-    }
-    const allPlayerEntries = Object.entries(byPlayer);
+    // Predictions so far — one row per tranche
     const poolTotal = fixtureBets.reduce((s, b) => s + b.stake, 0);
+    const playerCount = new Set(fixtureBets.map(b => b.user)).size;
 
-    // While betting is open, only show the current user's own row
-    const visibleEntries = bettingOpen
-      ? allPlayerEntries.filter(([userId]) => userId === req.session.userId)
-      : allPlayerEntries;
+    // While betting is open, only show the current user's own tranches
+    const visibleBets = bettingOpen
+      ? fixtureBets.filter(b => b.user === req.session.userId)
+      : fixtureBets;
 
     html += `<hr style="border-color:#1f2937;margin:16px 0;">`;
-    if (allPlayerEntries.length === 0) {
+    if (fixtureBets.length === 0) {
       html += `<p style="font-size:13px;color:#6b7280;">No predictions placed yet.</p>`;
     } else {
       html += `
         <p style="font-size:13px;color:#9ca3af;margin-bottom:8px;">
-          Predictions so far &nbsp;·&nbsp; <strong style="color:#e5e7eb;">${allPlayerEntries.length}</strong> player${allPlayerEntries.length !== 1 ? 's' : ''}
+          Predictions so far &nbsp;·&nbsp; <strong style="color:#e5e7eb;">${playerCount}</strong> player${playerCount !== 1 ? 's' : ''}
           &nbsp;·&nbsp; Pool: <strong style="color:#e5e7eb;">${poolTotal} pts</strong>
           ${bettingOpen ? `&nbsp;·&nbsp; <span style="font-size:11px;color:#6b7280;">(others hidden until kick-off)</span>` : ''}
         </p>
@@ -1341,22 +1335,21 @@ app.get('/match', requireAuth, async (req, res) => {
             <tr style="border-bottom:1px solid #1f2937;color:#6b7280;font-size:11px;text-transform:uppercase;">
               <th style="padding:6px 4px;text-align:left;">Player</th>
               <th style="padding:6px 4px;text-align:left;">Pick</th>
-              <th style="padding:6px 4px;text-align:right;">Total Stake</th>
-              <th style="padding:6px 4px;text-align:right;">Avg Odds</th>
+              <th style="padding:6px 4px;text-align:right;">Stake</th>
+              <th style="padding:6px 4px;text-align:right;">Odds</th>
             </tr>
           </thead>
           <tbody>
-            ${visibleEntries.length === 0
+            ${visibleBets.length === 0
               ? `<tr><td colspan="4" style="padding:10px 4px;color:#6b7280;font-size:12px;">You haven't placed a bet on this match yet.</td></tr>`
-              : visibleEntries.map(([userId, data]) => {
-                  const isMe = userId === req.session.userId;
-                  const selLabel = labelMap[data.selection] || data.selection;
-                  const wavgOdds = (data.bets.reduce((s, b) => s + b.lockedOdds * b.stake, 0) / data.totalStake).toFixed(2);
+              : visibleBets.map(b => {
+                  const isMe = b.user === req.session.userId;
+                  const selLabel = labelMap[b.selection] || b.selection;
                   return `<tr style="border-bottom:1px solid #1f2937;${isMe ? 'color:#22c55e;' : ''}">
-                    <td style="padding:8px 4px;">${userId}${isMe ? ' ★' : ''}</td>
+                    <td style="padding:8px 4px;">${b.user}${isMe ? ' ★' : ''}</td>
                     <td style="padding:8px 4px;">${selLabel}</td>
-                    <td style="padding:8px 4px;text-align:right;">${data.totalStake}</td>
-                    <td style="padding:8px 4px;text-align:right;">${wavgOdds}x</td>
+                    <td style="padding:8px 4px;text-align:right;">${b.stake} pts</td>
+                    <td style="padding:8px 4px;text-align:right;">${b.lockedOdds}x</td>
                   </tr>`;
                 }).join('')
             }
