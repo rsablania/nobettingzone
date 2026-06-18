@@ -1,45 +1,46 @@
-# [Project name]
+# No Betting Zone
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A points-based FIFA World Cup 2026 predictor app — users register, stake points on 1X2 match outcomes, and earn based on a tranche-level pari-mutuel settlement system.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- `node index.js` — run the app (port from `$PORT`, default 3000)
+- Required env: `DATABASE_URL` — Postgres connection string (auto-injected by Replit)
+- Required secrets: `SESSION_SECRET`, `THE_ODDS_API_KEY`, `RESEND_API_KEY`, `API_FOOTBALL_KEY`
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- Node.js 24, Express 4, plain HTML (server-rendered, no frontend framework)
+- DB: PostgreSQL via `pg` pool — two tables: `kv_store` (key-value store) and `session`
+- Sessions: `express-session` + `connect-pg-simple`
+- Emails: Resend
+- Odds: The Odds API (soccer_fifa_world_cup)
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `index.js` — entire application (~2360 lines), single file
+- `artifacts/no-betting-zone/.replit-artifact/artifact.toml` — deployment config (port 3003, VM)
+- `package.json` (workspace root) — dependencies for the no-betting-zone app
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- **`PgKV` class** (top of `index.js`): drop-in replacement for `@replit/database` — same `get/set/delete/list` API, backed by a `kv_store (key text PK, value jsonb)` table. All app data lives there.
+- **Fixture snapshot** is loaded into memory at startup from `snapshot:fixtures` key, refreshed once daily at 12 noon IST by the daily job. Routes never call the API directly.
+- **Settlement** uses tranche-level pari-mutuel: winners capped at `stake × lockedOdds`; undistributed pool returned to losers proportionally.
+- **Sessions** stored in PostgreSQL `session` table via `connect-pg-simple` — works in both dev and Reserved VM production (no REPLIT_DB_URL dependency).
+- **Admin password** stored as `admin:password` in kv_store; falls back to hardcoded default if key absent.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
-
-## User preferences
-
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- Users register with email + OTP verification, receive 100 starting points
+- Make 1X2 predictions with tranche-based staking (up to 100 pts per match in multiples of 20)
+- Leaderboard, personal stats, settled results, and community forum
+- Daily automated settlement + manual admin override
+- Admin panel: run daily job, manual settle, view OTPs, change password, snapshot info
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
-
-## Pointers
-
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- `db.list(prefix)` uses `LIKE $1 ESCAPE '!'` — the `!` escape character matters; do not change without updating the prefix-escape logic.
+- The fixture snapshot is in-memory only; a server restart re-loads it from `kv_store`. Production restarts happen on each publish.
+- Dev and production share the same PostgreSQL database (Replit-managed). Schema is created idempotently at startup.
+- `express.json({ limit: '20mb' })` — raised from default to handle large admin payloads.

@@ -13,7 +13,6 @@
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
   },
   "dependencies": {
-    "@replit/database": "^2.0.0",
     "axios": "^1.6.7",
     "bcryptjs": "^3.0.3",
     "connect-pg-simple": "^10.0.0",
