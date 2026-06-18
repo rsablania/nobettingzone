@@ -1,7 +1,6 @@
 const express = require('express');
 const axios = require('axios');
 const moment = require('moment-timezone');
-const Database = require('@replit/database');
 const session = require('express-session');
 const connectPgSimple = require('connect-pg-simple');
 const { Pool } = require('pg');
@@ -9,7 +8,53 @@ const bcrypt = require('bcryptjs');
 const { Resend } = require('resend');
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-const db = new Database();
+// ── PostgreSQL pool (shared by session store and kv store) ────────────────────
+const pgPool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+// ── PgKV: drop-in replacement for @replit/database ───────────────────────────
+// Same API: get/set/delete/list — backed by a simple kv_store table in Postgres.
+class PgKV {
+  constructor(pool) { this.pool = pool; }
+  async get(key) {
+    const { rows } = await this.pool.query(
+      'SELECT value FROM kv_store WHERE key = $1', [key]
+    );
+    return rows.length ? rows[0].value : null;
+  }
+  async set(key, value) {
+    await this.pool.query(
+      `INSERT INTO kv_store (key, value) VALUES ($1, $2::jsonb)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [key, JSON.stringify(value)]
+    );
+  }
+  async delete(key) {
+    await this.pool.query('DELETE FROM kv_store WHERE key = $1', [key]);
+  }
+  async list(prefix) {
+    const safe = prefix.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+    const { rows } = await this.pool.query(
+      "SELECT key FROM kv_store WHERE key LIKE $1 ESCAPE '\\\\'",
+      [safe + '%']
+    );
+    return rows.map(r => r.key);
+  }
+}
+
+const db = new PgKV(pgPool);
+
+// ── Bootstrap DB tables (idempotent) ─────────────────────────────────────────
+pgPool.query(`
+  CREATE TABLE IF NOT EXISTS kv_store (key text PRIMARY KEY, value jsonb);
+  CREATE TABLE IF NOT EXISTS "session" (
+    "sid" varchar NOT NULL COLLATE "default",
+    "sess" json NOT NULL,
+    "expire" timestamp(6) NOT NULL,
+    CONSTRAINT "session_pkey" PRIMARY KEY ("sid")
+  );
+  CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire");
+`).catch(e => console.error('[DB] Table init error:', e.message));
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -57,18 +102,6 @@ app.use(express.json());
 
 // PostgreSQL-backed session store — works in both dev and production
 const PgSession = connectPgSimple(session);
-const pgPool = new Pool({ connectionString: process.env.DATABASE_URL });
-
-// Ensure sessions table exists
-pgPool.query(`
-  CREATE TABLE IF NOT EXISTS "session" (
-    "sid" varchar NOT NULL COLLATE "default",
-    "sess" json NOT NULL,
-    "expire" timestamp(6) NOT NULL,
-    CONSTRAINT "session_pkey" PRIMARY KEY ("sid")
-  );
-  CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire");
-`).catch(e => console.error('[Session] Table init error:', e.message));
 
 app.use(session({
   secret: process.env.SESSION_SECRET || 'dev-secret',
