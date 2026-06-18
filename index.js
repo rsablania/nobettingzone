@@ -2054,6 +2054,66 @@ app.post('/admin/change-password', async (req, res) => {
   res.redirect('/admin?pwMsg=ok');
 });
 
+// ADMIN – one-time: fix Scotland vs Haiti PrakharThamke odds correction
+app.post('/admin/fix-prakhar-odds', async (req, res) => {
+  const { password } = req.body || {};
+  const adminPassword = await getAdminPassword();
+  if (password !== adminPassword) return res.status(403).json({ error: 'Forbidden' });
+
+  const fixtureId = '5ae41a06735c926eeb7f74006933adce';
+  const newOdds = 1.56;
+  const totalPool = 1200;
+
+  // Correct entries with new odds
+  const log = await db.get(`settlementLog:${fixtureId}`);
+  if (!log) return res.status(404).json({ error: 'Settlement log not found' });
+
+  const corrected = log.entries.map(e => {
+    const odds = e.user === 'PrakharThamke' ? newOdds : e.lockedOdds;
+    return { ...e, lockedOdds: odds, _cap: e.stake * odds };
+  });
+  const totalCaps = corrected.reduce((s, e) => s + e._cap, 0);
+  const newEntries = corrected.map(e => {
+    const rawPayout = Math.min(e._cap, (e._cap / totalCaps) * totalPool);
+    const finalPayout = Math.round(rawPayout * 10) / 10;
+    const netPoints  = Math.round((finalPayout - e.stake) * 10) / 10;
+    const { _cap, ...rest } = e;
+    return { ...rest, finalPayout, netPoints };
+  });
+
+  // Build delta map
+  const deltaMap = {};
+  for (const ne of newEntries) {
+    const old = log.entries.find(e => e.user === ne.user);
+    deltaMap[ne.user] = Math.round((ne.netPoints - old.netPoints) * 10) / 10;
+  }
+
+  // Update bets
+  const allBets = await getBets();
+  const updatedBets = allBets.map(b => {
+    if (b.fixtureId !== fixtureId) return b;
+    const ne = newEntries.find(e => e.user === b.user);
+    if (!ne) return b;
+    return { ...b, lockedOdds: ne.lockedOdds, netPoints: ne.netPoints };
+  });
+  await db.set('bets', updatedBets);
+
+  // Update settlement log
+  await db.set(`settlementLog:${fixtureId}`, { ...log, entries: newEntries });
+
+  // Update user totals
+  const results = [];
+  for (const [username, delta] of Object.entries(deltaMap)) {
+    const user = await getUserById(username);
+    if (!user) continue;
+    const newTotal = Math.round(((user.totalNetPoints ?? 0) + delta) * 10) / 10;
+    await saveUser({ ...user, totalNetPoints: newTotal });
+    results.push({ user: username, delta, newTotal });
+  }
+
+  res.json({ ok: true, results });
+});
+
 // ADMIN – manual settle a specific fixture
 app.post('/admin/manual-settle', async (req, res) => {
   if (!req.session.isAdmin) return res.redirect('/admin');
