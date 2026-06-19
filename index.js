@@ -2047,6 +2047,29 @@ app.post('/admin/change-password', async (req, res) => {
   res.redirect('/admin?pwMsg=ok');
 });
 
+// ADMIN – one-time: remove duplicate sriramsb tranche on Mexico vs South Korea
+app.post('/admin/fix-sriramsb-dupe', async (req, res) => {
+  const { password } = req.body || {};
+  const adminPassword = await getAdminPassword();
+  if (password !== adminPassword) return res.status(403).json({ error: 'Forbidden' });
+
+  const fixtureId = '0f2aeae6ac8e77223848d23a4ca86b0d';
+  const allBets = await getBets();
+  const dupes = allBets.filter(b => b.user === 'sriramsb' && b.fixtureId === fixtureId);
+  if (dupes.length < 2) return res.json({ ok: true, message: 'No duplicate found', count: dupes.length });
+
+  let kept = false;
+  const cleaned = allBets.filter(b => {
+    if (b.user === 'sriramsb' && b.fixtureId === fixtureId) {
+      if (!kept) { kept = true; return true; }
+      return false;
+    }
+    return true;
+  });
+  await db.set('bets', cleaned);
+  res.json({ ok: true, removed: allBets.length - cleaned.length, remaining: cleaned.filter(b => b.user === 'sriramsb' && b.fixtureId === fixtureId).length });
+});
+
 // ADMIN – one-time: fix Scotland vs Haiti PrakharThamke odds correction
 app.post('/admin/fix-prakhar-odds', async (req, res) => {
   const { password } = req.body || {};
