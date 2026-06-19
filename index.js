@@ -276,21 +276,32 @@ setInterval(async () => {
   }
 }, 60 * 1000);
 
-// Odds refresh every 2 hours (runs at :00 of hours 0,2,4,6,8,10,12,14,16,18,20,22 IST)
+// 2-hourly job at :00 — behaviour split by time of day (IST):
+//   00,02,04,06,08,10 → settlement only (scores API, 1 credit)
+//   12               → handled by daily job above (skipped here)
+//   14,16,18,20,22   → odds + fixture refresh (odds API, 1 credit)
 setInterval(async () => {
   try {
     const now = moment().tz(TIMEZONE);
     const h = now.hour();
-    if (h === 23) return;                         // 11 PM handled by full daily job
-    if (h % 2 !== 0 || now.minute() !== 0) return;
-    const key = `oddsRefresh:${now.format('YYYY-MM-DD-HH')}`;
+    if (h % 2 !== 0 || now.minute() !== 0) return; // only on even hours at :00
+    if (h === 12) return;                            // daily job owns the 12:00 slot
+    const key = `twoHourly:${now.format('YYYY-MM-DD-HH')}`;
     if (await db.get(key)) return;
     await db.set(key, true);
-    console.log(`[OddsRefresh] Fetching latest odds at ${now.format('HH:mm z')}…`);
-    await fetchAndStoreFixtures();
-    console.log(`[OddsRefresh] Done`);
+    if (h >= 0 && h <= 10) {
+      // Overnight — settle finished matches (scores endpoint, 1 credit)
+      console.log(`[NightlySettle] Running settlement at ${now.format('HH:mm z')}…`);
+      await settlePendingBets();
+      console.log(`[NightlySettle] Done`);
+    } else {
+      // Afternoon/evening — refresh odds + fixtures (odds endpoint, 1 credit)
+      console.log(`[OddsRefresh] Fetching latest odds at ${now.format('HH:mm z')}…`);
+      await fetchAndStoreFixtures();
+      console.log(`[OddsRefresh] Done`);
+    }
   } catch (e) {
-    console.error('[OddsRefresh] Error:', e.message);
+    console.error('[TwoHourly] Error:', e.message);
   }
 }, 60 * 1000);
 
