@@ -2061,6 +2061,25 @@ app.post('/admin/change-password', async (req, res) => {
   res.redirect('/admin?pwMsg=ok');
 });
 
+// ADMIN – one-time: clear sriramsb open bets
+app.post('/admin/fix-sriramsb-open-bets', async (req, res) => {
+  const { password } = req.body || {};
+  const adminPassword = await getAdminPassword();
+  if (password !== adminPassword) return res.status(403).json({ error: 'Forbidden' });
+
+  const allBets = await getBets();
+  const now = new Date();
+  const cleaned = allBets.filter(b => {
+    if (b.user !== 'sriramsb' || b.status !== 'PENDING') return true;
+    const kickoff = new Date(b.commenceTime);
+    const tenMinsBefore = new Date(kickoff.getTime() - 10 * 60 * 1000);
+    return now >= tenMinsBefore;
+  });
+  const removed = allBets.length - cleaned.length;
+  await db.set('bets', cleaned);
+  res.json({ ok: true, removed });
+});
+
 // ADMIN – one-time: remove duplicate sriramsb tranche on Mexico vs South Korea
 app.post('/admin/fix-sriramsb-dupe', async (req, res) => {
   const { password } = req.body || {};
