@@ -1144,8 +1144,22 @@ app.get('/match', requireAuth, async (req, res) => {
   if (!eventId) return res.redirect('/');
 
   try {
-    const event = await getEventById(eventId);
-    if (!event) return res.status(404).send('Match not found. It may have started or expired.');
+    let event = await getEventById(eventId);
+    if (!event) {
+      // Fixture no longer in snapshot (match started/finished) — reconstruct from bet data
+      const allBets = await getBets();
+      const anyBet = allBets.find(b => b.fixtureId === eventId);
+      if (!anyBet) return res.status(404).send('Match not found.');
+      event = {
+        id: eventId,
+        home_team: anyBet.homeTeam,
+        away_team: anyBet.awayTeam,
+        sport_title: anyBet.leagueName,
+        sport_key: anyBet.sportKey || '',
+        commence_time: anyBet.commenceTime || '',
+        bookmakers: [],
+      };
+    }
 
     const home = event.home_team;
     const away = event.away_team;
