@@ -1649,36 +1649,38 @@ app.get('/rules', requireAuth, (req, res) => {
   let html = htmlHeader('Rules - No Betting Zone');
   html += `
     <h2 style="margin-bottom:4px;">How It Works</h2>
-    <p style="color:#9ca3af;font-size:13px;margin-top:0;margin-bottom:20px;">Results logic &amp; settlement explained</p>
+    <p style="color:#9ca3af;font-size:13px;margin-top:0;margin-bottom:20px;">Rules, results logic &amp; settlement explained</p>
 
-    <!-- Predictions -->
+    <!-- Getting started -->
     <div class="card" style="margin-bottom:12px;">
-      <div style="font-size:13px;font-weight:700;color:#22c55e;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">Making a Prediction</div>
+      <div style="font-size:13px;font-weight:700;color:#22c55e;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">Getting Started</div>
       <ul style="margin:0;padding-left:18px;font-size:14px;line-height:1.8;color:#d1d5db;">
-        <li>Each match offers three outcomes — <strong style="color:#e5e7eb;">Home win, Draw, Away win</strong> (1X2 format).</li>
-        <li>Pick one outcome and choose a stake: <strong style="color:#a78bfa;">20 / 40 / 60 / 80 / 100 points</strong>.</li>
-        <li>Betting closes <strong style="color:#e5e7eb;">10 minutes before kick-off</strong>. No changes after that.</li>
-        <li>You can stake up to <strong style="color:#e5e7eb;">100 points per match</strong> in multiple tranches — e.g. 40 pts now, then 60 pts later. Each tranche must be a multiple of 20 pts (20 / 40 / 60 / 80 / 100) and locks in the odds at the time it is placed.</li>
-        <li>Each tranche can be on <strong style="color:#e5e7eb;">any outcome</strong> — you can spread your stake across different results if you wish. Betting closes 10 minutes before kick-off — no new tranches after that.</li>
+        <li>Every player starts with <strong style="color:#e5e7eb;">100 points</strong>.</li>
+        <li>Stake points on match outcomes to win more — or lose some if you get it wrong.</li>
+        <li>The goal is to finish the tournament with the highest <strong style="color:#e5e7eb;">net points</strong>.</li>
       </ul>
     </div>
 
-    <!-- Group stage -->
+    <!-- Making a prediction -->
     <div class="card" style="margin-bottom:12px;">
-      <div style="font-size:13px;font-weight:700;color:#3b82f6;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">Group Stage — Results</div>
+      <div style="font-size:13px;font-weight:700;color:#a78bfa;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">Making a Prediction</div>
       <ul style="margin:0;padding-left:18px;font-size:14px;line-height:1.8;color:#d1d5db;">
-        <li>Result is determined by the <strong style="color:#e5e7eb;">full-time (90-minute) score</strong>.</li>
-        <li>Home win, Draw, or Away win — straightforward 1X2 settlement.</li>
+        <li>Each match offers three outcomes — <strong style="color:#e5e7eb;">Home win (1), Draw (X), Away win (2)</strong>.</li>
+        <li>Pick an outcome and choose a stake: <strong style="color:#a78bfa;">20 / 40 / 60 / 80 / 100 points</strong>.</li>
+        <li>You can stake up to <strong style="color:#e5e7eb;">100 points per match</strong> split across multiple tranches — e.g. 40 pts now, then 60 pts later.</li>
+        <li>Each tranche <strong style="color:#e5e7eb;">locks in the odds at the moment it is placed</strong> — odds may change between tranches.</li>
+        <li>Each tranche can be on <strong style="color:#e5e7eb;">any outcome</strong> — you can spread across Home, Draw, and Away on the same match.</li>
+        <li>Predictions close <strong style="color:#e5e7eb;">10 minutes before kick-off</strong>. No changes or additions after that.</li>
       </ul>
     </div>
 
-    <!-- Knockout stage -->
+    <!-- Results -->
     <div class="card" style="margin-bottom:12px;">
-      <div style="font-size:13px;font-weight:700;color:#f59e0b;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">Knockout Stage — Results</div>
+      <div style="font-size:13px;font-weight:700;color:#3b82f6;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">How Results Are Determined</div>
       <ul style="margin:0;padding-left:18px;font-size:14px;line-height:1.8;color:#d1d5db;">
-        <li>Result is still based on the <strong style="color:#e5e7eb;">90-minute score only</strong>. Extra time and penalty shootouts are <strong style="color:#e5e7eb;">not</strong> considered.</li>
-        <li>If the match is level after 90 minutes, the result is settled as a <strong style="color:#e5e7eb;">Draw</strong> — regardless of who wins on penalties.</li>
-        <li>"Draw" in a knockout match means the game was tied at full-time and went to extra time/penalties.</li>
+        <li><strong style="color:#e5e7eb;">Group stage:</strong> result is the <strong style="color:#e5e7eb;">full-time (90-minute) score</strong> — Home win, Draw, or Away win.</li>
+        <li><strong style="color:#e5e7eb;">Knockout stage:</strong> result is still the <strong style="color:#e5e7eb;">90-minute score only</strong>. Extra time and penalties are <strong style="color:#ef4444;">not</strong> counted.</li>
+        <li>A knockout match level at 90 minutes is settled as a <strong style="color:#e5e7eb;">Draw</strong> — regardless of who wins on penalties.</li>
       </ul>
     </div>
 
@@ -1686,28 +1688,32 @@ app.get('/rules', requireAuth, (req, res) => {
     <div class="card" style="margin-bottom:12px;">
       <div style="font-size:13px;font-weight:700;color:#22c55e;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">Settlement — How Points Are Calculated</div>
       <ul style="margin:0;padding-left:18px;font-size:14px;line-height:1.8;color:#d1d5db;">
-        <li>All stakes from all players on a match form a <strong style="color:#e5e7eb;">shared pool</strong>.</li>
-        <li>Only players who picked the correct outcome share the pool.</li>
-        <li>Your share is proportional to your <strong style="color:#e5e7eb;">stake × your locked odds</strong> relative to the total of all correct picks' weighted stakes.</li>
-        <li>If nobody picks correctly, all stakes are forfeited and no points are paid out.</li>
-        <li><strong style="color:#e5e7eb;">Net points</strong> = payout received − stake paid. This can be positive (profit) or negative (loss).</li>
+        <li>All stakes on a match (across all players and outcomes) form a <strong style="color:#e5e7eb;">shared pool</strong>.</li>
+        <li>The pool is distributed only among players who picked the correct outcome.</li>
+        <li>Settlement is <strong style="color:#e5e7eb;">tranche-level</strong> — each tranche is settled independently using its own locked odds.</li>
+        <li>Each winning tranche receives a share of the pool proportional to its <strong style="color:#e5e7eb;">stake × locked odds</strong>, capped at that same value.</li>
+        <li>Any undistributed pool (from caps being hit) is returned to losing tranches proportionally.</li>
+        <li>If <strong style="color:#e5e7eb;">nobody picks correctly</strong>, all stakes are forfeited and no points are paid out.</li>
+        <li><strong style="color:#e5e7eb;">Net points</strong> = payout received − stake. Can be positive (profit) or negative (loss).</li>
       </ul>
       <div style="background:#0f172a;border-radius:8px;padding:12px;margin-top:12px;font-size:13px;color:#9ca3af;">
-        <div style="color:#e5e7eb;font-weight:600;margin-bottom:4px;">Example</div>
-        Pool = 200 pts. Correct pickers: Player A (stake 100, odds 2.0) and Player B (stake 60, odds 2.0).<br>
-        Weighted: A = 200, B = 120. Total = 320.<br>
-        A gets <strong style="color:#22c55e;">200 ÷ 320 × 200 = 125 pts</strong> payout → net <strong style="color:#22c55e;">+25 pts</strong>.<br>
-        B gets <strong style="color:#22c55e;">120 ÷ 320 × 200 = 75 pts</strong> payout → net <strong style="color:#22c55e;">+15 pts</strong>.
+        <div style="color:#e5e7eb;font-weight:600;margin-bottom:6px;">Example</div>
+        Pool = 300 pts total. Correct outcome: Home win.<br>
+        Winning tranches: Player A — 100 pts @ 2.0x (cap 200), Player B — 60 pts @ 1.5x (cap 90).<br>
+        Total caps = 290. Pool (300) exceeds no cap, so each gets their proportional share:<br>
+        A gets <strong style="color:#22c55e;">200 ÷ 290 × 300 ≈ 207 pts</strong> → net <strong style="color:#22c55e;">+107 pts</strong>.<br>
+        B gets <strong style="color:#22c55e;">90 ÷ 290 × 300 ≈ 93 pts</strong> → net <strong style="color:#22c55e;">+33 pts</strong>.
       </div>
     </div>
 
     <!-- Settlement timing -->
     <div class="card" style="margin-bottom:12px;">
-      <div style="font-size:13px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">Settlement Timing</div>
+      <div style="font-size:13px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">Automated Schedule (IST)</div>
       <ul style="margin:0;padding-left:18px;font-size:14px;line-height:1.8;color:#d1d5db;">
-        <li>Odds are refreshed every <strong style="color:#e5e7eb;">2 hours</strong>. Results are checked and settled once daily at <strong style="color:#e5e7eb;">12 noon IST</strong>.</li>
-        <li>Bets are settled as soon as the result is confirmed by the data source.</li>
-        <li>Settled results appear on the <a href="/results" style="color:#22c55e;">Results</a> page and your <a href="/summary" style="color:#22c55e;">My Stats</a> page.</li>
+        <li><strong style="color:#e5e7eb;">00:00, 02:00, 04:00, 06:00, 08:00, 10:00</strong> — results checked &amp; bets settled automatically.</li>
+        <li><strong style="color:#e5e7eb;">12:00 noon</strong> — full daily job: settle any remaining bets + refresh fixtures &amp; odds.</li>
+        <li><strong style="color:#e5e7eb;">14:00, 16:00, 18:00, 20:00, 22:00</strong> — odds &amp; fixtures refreshed.</li>
+        <li>Settled results appear immediately on the <a href="/results" style="color:#22c55e;">Results</a> page and your <a href="/summary" style="color:#22c55e;">My Stats</a> page.</li>
       </ul>
     </div>
   `;
