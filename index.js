@@ -1721,7 +1721,7 @@ app.get('/rules', requireAuth, (req, res) => {
   res.send(html);
 });
 
-// RESULTS – list of all settled matches
+// RESULTS – all settled matches inline
 app.get('/results', requireAuth, async (req, res) => {
   const keys = await db.list('settlementLog:');
   const logs = [];
@@ -1745,110 +1745,48 @@ app.get('/results', requireAuth, async (req, res) => {
     ${lastUpdated ? `Last updated: <strong style="color:#9ca3af;">${lastUpdated}</strong> &nbsp;·&nbsp; ` : ''}
     Next scheduled update: <strong style="color:#9ca3af;">${nextUpdateStr}</strong>
   </p>`;
-  html += `<p style="font-size:12px;color:#6b7280;margin-bottom:14px;">
-    Alternative views: &nbsp;
-    <a href="/alt-results-1" style="color:#f59e0b;">Alt Results 1 (Fixed Odds)</a>
-    &nbsp;·&nbsp;
-    <a href="/alt-results-2" style="color:#3b82f6;">Alt Results 2 (Uncapped)</a>
+  html += `<p style="font-size:11px;color:#6b7280;margin-bottom:14px;">
+    <a href="/alt-results-1" style="color:#f59e0b;">Alt Results 1 (Fixed Odds) →</a>
   </p>`;
 
   if (!logs.length) {
     html += `<p style="color:#9ca3af;">No settled matches yet. Check back after results are in.</p>`;
   } else {
     for (const log of logs) {
-      const resultLabel = log.result === 'Home' ? `${log.homeTeam} wins`
-        : log.result === 'Away' ? `${log.awayTeam} wins` : 'Draw';
-      const winners = log.entries.filter(e => e.status === 'WON').length;
-      const total = log.entries.length;
+      const resultLabel = log.result === 'Home' ? log.homeTeam + ' wins'
+        : log.result === 'Away' ? log.awayTeam + ' wins' : 'Draw';
+      const selMap = s => s === 'Home' ? log.homeTeam : s === 'Away' ? log.awayTeam : 'Draw';
+      const sorted = [...log.entries].sort((a, b) => b.netPoints - a.netPoints);
       html += `
-        <a href="/results/${log.fixtureId}" style="display:block;text-decoration:none;color:inherit;">
-          <div class="card" style="margin-bottom:10px;">
-            <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-              <div>
-                <div style="font-size:14px;font-weight:700;color:#e5e7eb;">${log.homeTeam} vs ${log.awayTeam}</div>
-                <div style="font-size:11px;color:#6b7280;margin-top:2px;">${log.leagueName}</div>
-                <div style="font-size:11px;color:#6b7280;margin-top:1px;">${log.settledAt}</div>
-              </div>
-              <span style="font-size:11px;font-weight:bold;color:#22c55e;border:1px solid #22c55e;border-radius:4px;padding:2px 6px;white-space:nowrap;margin-left:8px;">SETTLED</span>
-            </div>
-            <div style="margin-top:8px;display:flex;justify-content:space-between;align-items:center;">
-              <span style="font-size:13px;font-weight:600;color:#e5e7eb;">Result: ${resultLabel}</span>
-              <span style="font-size:12px;color:#9ca3af;">${winners}/${total} correct &nbsp;·&nbsp; ${log.totalStaked} pts pool</span>
-            </div>
-            <div style="font-size:11px;color:#6b7280;margin-top:4px;">Tap to see full breakdown →</div>
+        <div class="card" style="margin-bottom:10px;">
+          <div style="font-size:14px;font-weight:700;color:#e5e7eb;">${log.homeTeam} vs ${log.awayTeam}</div>
+          <div style="font-size:11px;color:#6b7280;margin-top:2px;">
+            ${log.settledAt} &nbsp;·&nbsp; Result: <strong style="color:#e5e7eb;">${resultLabel}</strong>
+            &nbsp;·&nbsp; Pool: ${log.totalStaked} pts
           </div>
-        </a>`;
+          <table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:8px;">
+            <thead><tr style="color:#6b7280;border-bottom:1px solid #1f2937;">
+              <th style="text-align:left;padding:3px 0;">Player</th>
+              <th style="text-align:left;padding:3px 4px;">Pick</th>
+              <th style="text-align:right;padding:3px 4px;">Stake</th>
+              <th style="text-align:right;padding:3px 4px;">Odds</th>
+              <th style="text-align:right;padding:3px 0;">Net</th>
+            </tr></thead>
+            <tbody>
+              ${sorted.map(e => {
+                const col = e.status === 'WON' ? '#22c55e' : '#ef4444';
+                return `<tr style="border-bottom:1px solid #0f172a;">
+                  <td style="padding:4px 0;color:#e5e7eb;">${e.user}</td>
+                  <td style="padding:4px 4px;color:#9ca3af;">${selMap(e.selection)}</td>
+                  <td style="padding:4px 4px;text-align:right;color:#a78bfa;">${e.stake}</td>
+                  <td style="padding:4px 4px;text-align:right;color:#9ca3af;">${e.lockedOdds}x</td>
+                  <td style="padding:4px 0;text-align:right;font-weight:600;color:${col};">${e.netPoints >= 0 ? '+' : ''}${Number(e.netPoints).toFixed(1)}</td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>`;
     }
-  }
-
-  html += htmlFooter('results');
-  res.send(html);
-});
-
-// RESULTS – detail page for one settled match
-app.get('/results/:fixtureId', requireAuth, async (req, res) => {
-  const log = await db.get(`settlementLog:${req.params.fixtureId}`);
-  if (!log) {
-    return res.send(htmlHeader('Not Found') + `<p style="color:#9ca3af;">No settlement data found for this match.</p>` + htmlFooter('results'));
-  }
-
-  const resultLabel = log.result === 'Home' ? `${log.homeTeam} wins`
-    : log.result === 'Away' ? `${log.awayTeam} wins` : 'Draw';
-
-  const selLabel = (sel, home, away) =>
-    sel === 'Home' ? `${home} wins` : sel === 'Away' ? `${away} wins` : 'Draw';
-
-  // Sort: winners first, then by netPoints desc
-  const sorted = [...log.entries].sort((a, b) => {
-    if (a.status === b.status) return b.netPoints - a.netPoints;
-    return a.status === 'WON' ? -1 : 1;
-  });
-
-  let html = htmlHeader(`${log.homeTeam} vs ${log.awayTeam} - Results`);
-  html += `
-    <a href="/results" style="font-size:12px;color:#6b7280;text-decoration:none;">← Back to Results</a>
-
-    <div class="card" style="margin-top:10px;margin-bottom:16px;">
-      <div style="font-size:15px;font-weight:700;color:#e5e7eb;">${log.homeTeam} vs ${log.awayTeam}</div>
-      <div style="font-size:12px;color:#6b7280;margin-top:2px;">${log.leagueName} &nbsp;·&nbsp; ${log.settledAt}</div>
-      <div style="margin-top:10px;display:flex;gap:16px;flex-wrap:wrap;">
-        <div style="text-align:center;">
-          <div style="font-size:18px;font-weight:bold;color:#22c55e;">${resultLabel}</div>
-          <div style="font-size:10px;color:#6b7280;margin-top:2px;">RESULT</div>
-        </div>
-        <div style="text-align:center;">
-          <div style="font-size:18px;font-weight:bold;color:#e5e7eb;">${log.totalStaked}</div>
-          <div style="font-size:10px;color:#6b7280;margin-top:2px;">TOTAL POOL (pts)</div>
-        </div>
-        <div style="text-align:center;">
-          <div style="font-size:18px;font-weight:bold;color:#e5e7eb;">${log.entries.length}</div>
-          <div style="font-size:10px;color:#6b7280;margin-top:2px;">PREDICTIONS</div>
-        </div>
-      </div>
-    </div>
-
-    <h3 style="font-size:13px;color:#9ca3af;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em;">All Predictions</h3>
-  `;
-
-  for (const e of sorted) {
-    const won = e.status === 'WON';
-    const netColor = e.netPoints >= 0 ? '#22c55e' : '#ef4444';
-    const netSign = e.netPoints >= 0 ? '+' : '';
-    html += `
-      <div class="card" style="margin-bottom:8px;border-left:3px solid ${won ? '#22c55e' : '#ef4444'};">
-        <div style="display:flex;justify-content:space-between;align-items:center;">
-          <span style="font-size:13px;font-weight:700;color:#e5e7eb;">${e.user}</span>
-          <span style="font-size:12px;font-weight:bold;color:${netColor};">${netSign}${Number(e.netPoints).toFixed(1)} pts</span>
-        </div>
-        <div style="font-size:12px;color:#9ca3af;margin-top:4px;">
-          Picked: <strong style="color:#e5e7eb;">${selLabel(e.selection, log.homeTeam, log.awayTeam)}</strong>
-          &nbsp;·&nbsp; Stake: ${e.stake} pts &nbsp;·&nbsp; Odds: ${e.lockedOdds}
-        </div>
-        <div style="font-size:11px;margin-top:4px;">
-          <span style="color:${won ? '#22c55e' : '#ef4444'};font-weight:600;">${won ? '✓ WON' : '✗ LOST'}</span>
-          ${won ? `<span style="color:#6b7280;margin-left:8px;">Payout: ${Number(e.finalPayout).toFixed(1)} pts</span>` : ''}
-        </div>
-      </div>`;
   }
 
   html += htmlFooter('results');
@@ -1897,7 +1835,6 @@ app.get('/alt-results-1', requireAuth, async (req, res) => {
     <p style="color:#9ca3af;font-size:13px;margin-top:0;margin-bottom:4px;">Fixed-odds: winners receive stake × locked odds; losers forfeit stake. Surplus/deficit goes to House.</p>
     <p style="font-size:11px;color:#6b7280;margin-bottom:14px;">
       <a href="/results" style="color:#6b7280;">← Results</a>
-      &nbsp;·&nbsp; <a href="/alt-results-2" style="color:#6b7280;">Alt Results 2 →</a>
     </p>
 
     <div class="card" style="margin-bottom:16px;">
@@ -1937,110 +1874,6 @@ app.get('/alt-results-1', requireAuth, async (req, res) => {
           ${log.settledAt} &nbsp;·&nbsp; Result: <strong style="color:#e5e7eb;">${resultLabel}</strong>
           &nbsp;·&nbsp; Pool: ${log.totalStaked} pts
           &nbsp;·&nbsp; House: <span style="color:${houseDelta >= 0 ? '#f59e0b' : '#ef4444'};font-weight:600;">${houseDelta >= 0 ? '+' : ''}${houseDelta.toFixed(1)}</span>
-        </div>
-        <table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:8px;">
-          <thead><tr style="color:#6b7280;border-bottom:1px solid #1f2937;">
-            <th style="text-align:left;padding:3px 0;">Player</th>
-            <th style="text-align:left;padding:3px 4px;">Pick</th>
-            <th style="text-align:right;padding:3px 4px;">Stake</th>
-            <th style="text-align:right;padding:3px 4px;">Odds</th>
-            <th style="text-align:right;padding:3px 0;">Net</th>
-          </tr></thead>
-          <tbody>
-            ${sorted.map(e => {
-              const col = e.status === 'WON' ? '#22c55e' : '#ef4444';
-              return `<tr style="border-bottom:1px solid #0f172a;">
-                <td style="padding:4px 0;color:#e5e7eb;">${e.user}</td>
-                <td style="padding:4px 4px;color:#9ca3af;">${selMap(e.selection)}</td>
-                <td style="padding:4px 4px;text-align:right;color:#a78bfa;">${e.stake}</td>
-                <td style="padding:4px 4px;text-align:right;color:#9ca3af;">${e.lockedOdds}x</td>
-                <td style="padding:4px 0;text-align:right;font-weight:600;color:${col};">${e.altNet >= 0 ? '+' : ''}${e.altNet.toFixed(1)}</td>
-              </tr>`;
-            }).join('')}
-          </tbody>
-        </table>
-      </div>`;
-  }
-
-  html += htmlFooter('results');
-  res.send(html);
-});
-
-// ALT RESULTS 2 – Uncapped pari-mutuel settlement
-app.get('/alt-results-2', requireAuth, async (req, res) => {
-  const keys = await db.list('settlementLog:');
-  const logs = [];
-  for (const key of keys) { const l = await db.get(key); if (l) logs.push(l); }
-  logs.sort((a, b) => a.settledAt < b.settledAt ? 1 : -1);
-
-  const leaderboard = {};
-
-  const matchData = logs.map(log => {
-    const winners = log.entries.filter(e => e.status === 'WON');
-    const sumGross = winners.reduce((s, e) => s + e.stake * parseFloat(e.lockedOdds), 0);
-    const entries = log.entries.map(e => {
-      if (e.status === 'WON') {
-        const gross = e.stake * parseFloat(e.lockedOdds);
-        const payout = sumGross > 0 ? Math.round((gross / sumGross) * log.totalStaked * 10) / 10 : e.stake;
-        const net = Math.round((payout - e.stake) * 10) / 10;
-        leaderboard[e.user] = Math.round(((leaderboard[e.user] || 0) + net) * 10) / 10;
-        return { ...e, altPayout: payout, altNet: net };
-      } else {
-        leaderboard[e.user] = Math.round(((leaderboard[e.user] || 0) - e.stake) * 10) / 10;
-        return { ...e, altPayout: 0, altNet: -e.stake };
-      }
-    });
-    return { log, entries };
-  });
-
-  const lbEntries = Object.entries(leaderboard).map(([user, net]) => ({ user, net }));
-  lbEntries.sort((a, b) => b.net - a.net);
-
-  let html = htmlHeader('Alt Results 2 - No Betting Zone');
-  html += `
-    <h2 style="margin-bottom:4px;">Alt Results 2</h2>
-    <p style="color:#9ca3af;font-size:13px;margin-top:0;margin-bottom:4px;">Pari-mutuel without cap — winners share the full pool proportional to stake × locked odds, with no ceiling.</p>
-    <p style="font-size:11px;color:#6b7280;margin-bottom:14px;">
-      <a href="/results" style="color:#6b7280;">← Results</a>
-      &nbsp;·&nbsp; <a href="/alt-results-1" style="color:#6b7280;">← Alt Results 1</a>
-    </p>
-
-    <div class="card" style="margin-bottom:16px;">
-      <div style="font-size:13px;font-weight:700;color:#3b82f6;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">Leaderboard — Uncapped Pari-mutuel</div>
-      <table style="width:100%;border-collapse:collapse;font-size:13px;">
-        <thead><tr style="color:#6b7280;font-size:11px;border-bottom:1px solid #1f2937;">
-          <th style="text-align:left;padding:4px 0;">Rank</th>
-          <th style="text-align:left;padding:4px 6px;">Player</th>
-          <th style="text-align:right;padding:4px 0;">Net Pts</th>
-        </tr></thead>
-        <tbody>
-          ${lbEntries.map((e, i) => {
-            const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '#' + (i + 1);
-            const col = e.net >= 0 ? '#22c55e' : '#ef4444';
-            return `<tr style="border-bottom:1px solid #1f2937;">
-              <td style="padding:6px 0;color:#9ca3af;">${medal}</td>
-              <td style="padding:6px 6px;color:#e5e7eb;">${e.user}</td>
-              <td style="padding:6px 0;text-align:right;font-weight:700;color:${col};">${e.net >= 0 ? '+' : ''}${e.net.toFixed(1)}</td>
-            </tr>`;
-          }).join('')}
-        </tbody>
-      </table>
-    </div>
-
-    <h3 style="font-size:14px;margin-bottom:8px;">Match Breakdown</h3>
-  `;
-
-  for (const { log, entries } of matchData) {
-    const resultLabel = log.result === 'Home' ? log.homeTeam + ' wins'
-      : log.result === 'Away' ? log.awayTeam + ' wins' : 'Draw';
-    const selMap = s => s === 'Home' ? log.homeTeam : s === 'Away' ? log.awayTeam : 'Draw';
-    const sorted = [...entries].sort((a, b) => b.altNet - a.altNet);
-    html += `
-      <div class="card" style="margin-bottom:10px;">
-        <div style="font-size:14px;font-weight:700;color:#e5e7eb;">${log.homeTeam} vs ${log.awayTeam}</div>
-        <div style="font-size:11px;color:#6b7280;margin-top:2px;">
-          ${log.settledAt} &nbsp;·&nbsp; Result: <strong style="color:#e5e7eb;">${resultLabel}</strong>
-          &nbsp;·&nbsp; Pool: ${log.totalStaked} pts
         </div>
         <table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:8px;">
           <thead><tr style="color:#6b7280;border-bottom:1px solid #1f2937;">
