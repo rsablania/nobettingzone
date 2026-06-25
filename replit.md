@@ -42,5 +42,5 @@ A points-based FIFA World Cup 2026 predictor app — users register, stake point
 
 - `db.list(prefix)` uses `LIKE $1 ESCAPE '!'` — the `!` escape character matters; do not change without updating the prefix-escape logic.
 - The fixture snapshot is in-memory only; a server restart re-loads it from `kv_store`. Production restarts happen on each publish.
-- Dev and production share the same PostgreSQL database (Replit-managed). Schema is created idempotently at startup.
+- Dev and production use **separate** PostgreSQL databases. Production has its own live DB populated by the running deployment; dev has a smaller dataset. Schema is created idempotently at startup.
 - `express.json({ limit: '20mb' })` — raised from default to handle large admin payloads.
