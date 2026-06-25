@@ -636,7 +636,6 @@ function htmlFooter(active) {
     <div class="nav">
       <a href="/" class="${active === 'home' ? 'active' : ''}">Home</a>
       <a href="/summary" class="${active === 'summary' ? 'active' : ''}">My Stats</a>
-      <a href="/leaderboard" class="${active === 'leaders' ? 'active' : ''}">Leaders</a>
       <a href="/rules" class="${active === 'rules' ? 'active' : ''}">Rules</a>
       <a href="/results" class="${active === 'results' ? 'active' : ''}">Results</a>
       <a href="/forum" class="${active === 'forum' ? 'active' : ''}">Forum</a>
@@ -1721,15 +1720,26 @@ app.get('/rules', requireAuth, (req, res) => {
   res.send(html);
 });
 
-// RESULTS – all settled matches inline
+// RESULTS – leaderboard + all settled matches inline
 app.get('/results', requireAuth, async (req, res) => {
-  const keys = await db.list('settlementLog:');
+  const [settlementKeys, userKeys] = await Promise.all([
+    db.list('settlementLog:'),
+    db.list('user:'),
+  ]);
+
   const logs = [];
-  for (const key of keys) {
+  for (const key of settlementKeys) {
     const log = await db.get(key);
     if (log) logs.push(log);
   }
   logs.sort((a, b) => (a.settledAt < b.settledAt ? 1 : -1)); // newest first
+
+  const users = [];
+  for (const key of userKeys) {
+    const u = await db.get(key);
+    if (u) users.push(u);
+  }
+  users.sort((a, b) => b.totalNetPoints - a.totalNetPoints);
 
   const lastUpdated = logs.length ? logs[0].settledAt : null;
   const nextNoon = (() => {
@@ -1739,8 +1749,8 @@ app.get('/results', requireAuth, async (req, res) => {
   })();
   const nextUpdateStr = nextNoon.format('D MMM YYYY, h:mm A z');
 
-  let html = htmlHeader('Match Results - No Betting Zone');
-  html += `<h2>Match Results</h2>`;
+  let html = htmlHeader('Results - No Betting Zone');
+  html += `<h2>Results</h2>`;
   html += `<p style="font-size:11px;color:#6b7280;margin-top:-4px;margin-bottom:6px;">
     ${lastUpdated ? `Last updated: <strong style="color:#9ca3af;">${lastUpdated}</strong> &nbsp;·&nbsp; ` : ''}
     Next scheduled update: <strong style="color:#9ca3af;">${nextUpdateStr}</strong>
@@ -1748,6 +1758,35 @@ app.get('/results', requireAuth, async (req, res) => {
   html += `<p style="font-size:11px;color:#6b7280;margin-bottom:14px;">
     <a href="/alt-results-1" style="color:#f59e0b;">Alt Results 1 (Fixed Odds) →</a>
   </p>`;
+
+  // Leaderboard
+  html += `
+    <div class="card" style="margin-bottom:16px;">
+      <div style="font-size:13px;font-weight:700;color:#22c55e;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">Leaderboard</div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead><tr style="color:#6b7280;font-size:11px;border-bottom:1px solid #1f2937;">
+          <th style="text-align:left;padding:4px 0;">Rank</th>
+          <th style="text-align:left;padding:4px 6px;">Player</th>
+          <th style="text-align:right;padding:4px 0;">Net Pts</th>
+        </tr></thead>
+        <tbody>
+          ${users.map((u, i) => {
+            const name = u.displayName || u.userId || u.name || 'Unknown';
+            const net = u.totalNetPoints || 0;
+            const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '#' + (i + 1);
+            const col = net > 0 ? '#22c55e' : net < 0 ? '#ef4444' : '#e5e7eb';
+            return `<tr style="border-bottom:1px solid #1f2937;">
+              <td style="padding:6px 0;color:#9ca3af;">${medal}</td>
+              <td style="padding:6px 6px;color:#e5e7eb;font-weight:${i < 3 ? '600' : '400'};">${name}</td>
+              <td style="padding:6px 0;text-align:right;font-weight:700;color:${col};">${net >= 0 ? '+' : ''}${net.toFixed(1)}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+
+    <h3 style="font-size:14px;margin-bottom:8px;">Match Results</h3>
+  `;
 
   if (!logs.length) {
     html += `<p style="color:#9ca3af;">No settled matches yet. Check back after results are in.</p>`;
@@ -2426,51 +2465,7 @@ app.post('/admin/send-settlement-logs', async (req, res) => {
 });
 
 // LEADERBOARD
-app.get('/leaderboard', requireAuth, async (req, res) => {
-  const keys = await db.list('user:');
-  const users = [];
-  for (const key of keys) {
-    const u = await db.get(key);
-    if (u) users.push(u);
-  }
-  users.sort((a, b) => b.totalNetPoints - a.totalNetPoints);
-
-  let html = htmlHeader('Leaderboard - No Betting Zone');
-  html += `<h2>Leaderboard</h2>`;
-
-  if (!users.length) {
-    html += `<p style="color:#9ca3af;">No players yet.</p>`;
-  } else {
-    html += `
-      <table style="width:100%;border-collapse:collapse;font-size:14px;">
-        <thead>
-          <tr style="border-bottom:2px solid #1f2937;color:#6b7280;font-size:12px;text-transform:uppercase;letter-spacing:.05em;">
-            <th style="padding:8px 6px;text-align:left;width:40px;">#</th>
-            <th style="padding:8px 6px;text-align:left;">Player</th>
-            <th style="padding:8px 6px;text-align:right;">Points</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${users.map((u, idx) => {
-            const name = u.displayName || u.userId || u.name || 'Unknown';
-            const pts = (u.totalNetPoints || 0).toFixed(1);
-            const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `${idx + 1}`;
-            const ptColor = u.totalNetPoints > 0 ? '#22c55e' : u.totalNetPoints < 0 ? '#ef4444' : '#e5e7eb';
-            const rowBg = idx % 2 === 0 ? 'background:#0a0f1e;' : '';
-            return `<tr style="border-bottom:1px solid #1f2937;${rowBg}">
-              <td style="padding:10px 6px;font-size:16px;">${medal}</td>
-              <td style="padding:10px 6px;font-weight:${idx < 3 ? '600' : '400'};">${name}</td>
-              <td style="padding:10px 6px;text-align:right;font-weight:700;color:${ptColor};">${u.totalNetPoints >= 0 ? '+' : ''}${pts}</td>
-            </tr>`;
-          }).join('')}
-        </tbody>
-      </table>
-    `;
-  }
-
-  html += htmlFooter('leaders');
-  res.send(html);
-});
+app.get('/leaderboard', (req, res) => res.redirect('/results'));
 
 // FORUM – chat with emojis (from keyboard) and @Name in text
 app.get('/forum', requireAuth, async (req, res) => {
