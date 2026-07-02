@@ -1732,7 +1732,7 @@ app.get('/results', requireAuth, async (req, res) => {
     const log = await db.get(key);
     if (log) logs.push(log);
   }
-  logs.sort((a, b) => (a.settledAt < b.settledAt ? 1 : -1)); // newest first
+  logs.sort((a, b) => moment(b.settledAt, 'DD MMM YYYY, HH:mm z').valueOf() - moment(a.settledAt, 'DD MMM YYYY, HH:mm z').valueOf()); // newest first
 
   const users = [];
   for (const key of userKeys) {
@@ -1840,7 +1840,7 @@ app.get('/alt-results-1', requireAuth, async (req, res) => {
   const keys = await db.list('settlementLog:');
   const logs = [];
   for (const key of keys) { const l = await db.get(key); if (l) logs.push(l); }
-  logs.sort((a, b) => a.settledAt < b.settledAt ? 1 : -1);
+  logs.sort((a, b) => moment(b.settledAt, 'DD MMM YYYY, HH:mm z').valueOf() - moment(a.settledAt, 'DD MMM YYYY, HH:mm z').valueOf());
 
   const leaderboard = {};
   let houseTotalNet = 0;
