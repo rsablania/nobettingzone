@@ -1952,6 +1952,12 @@ app.get('/admin', async (req, res) => {
   const allBets = await getBets();
   const settlementLogKeys = await db.list('settlementLog:');
   const logCount = settlementLogKeys.length;
+  const settledFixtures = [];
+  for (const key of settlementLogKeys) {
+    const sl = await db.get(key);
+    if (sl) settledFixtures.push({ id: sl.fixtureId, label: `${sl.homeTeam} vs ${sl.awayTeam} — ${sl.settledAt}`, currentResult: sl.result });
+  }
+  settledFixtures.sort((a, b) => a.label.localeCompare(b.label));
   const pending = allBets.filter(b => b.status === 'PENDING').length;
   const won = allBets.filter(b => b.status === 'WON').length;
   const lost = allBets.filter(b => b.status === 'LOST').length;
@@ -2051,6 +2057,38 @@ app.get('/admin', async (req, res) => {
               </label>
             </div>
             <button type="submit" style="margin-top:10px;background:#b45309;border-color:#b45309;">Settle fixture</button>
+          </form>`;
+      })()}
+
+      <hr style="border-color:#1f2937;margin:16px 0;">
+      <h3 style="font-size:14px;color:#9ca3af;">Re-settle Settled Fixture</h3>
+      ${(() => {
+        const rsMsg = req.query.resettleMsg || '';
+        const rsFeedback = rsMsg === 'ok'
+          ? `<p style="font-size:13px;color:#22c55e;margin-bottom:8px;">✓ Fixture re-settled successfully.</p>`
+          : rsMsg ? `<p style="font-size:13px;color:#ef4444;margin-bottom:8px;">${rsMsg}</p>` : '';
+        if (!settledFixtures.length) {
+          return `${rsFeedback}<p style="font-size:13px;color:#9ca3af;">No settled fixtures yet.</p>`;
+        }
+        return `${rsFeedback}
+          <p style="font-size:12px;color:#9ca3af;margin-bottom:10px;">Reverses the old settlement and recalculates with the new result. Use with care.</p>
+          <form method="POST" action="/admin/re-settle">
+            <select name="fixtureId" required style="width:100%;max-width:340px;margin-bottom:8px;padding:8px;background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:6px;font-size:13px;">
+              ${settledFixtures.map(f => `<option value="${f.id}">${f.label} [${f.currentResult}]</option>`).join('')}
+            </select>
+            <br>
+            <div style="display:flex;gap:8px;margin-top:6px;max-width:340px;">
+              <label style="flex:1;text-align:center;">
+                <input type="radio" name="result" value="Home" required style="margin-right:4px;">Home win
+              </label>
+              <label style="flex:1;text-align:center;">
+                <input type="radio" name="result" value="Draw" style="margin-right:4px;">Draw
+              </label>
+              <label style="flex:1;text-align:center;">
+                <input type="radio" name="result" value="Away" style="margin-right:4px;">Away win
+              </label>
+            </div>
+            <button type="submit" style="margin-top:10px;background:#dc2626;border-color:#dc2626;">Re-settle fixture</button>
           </form>`;
       })()}
 
@@ -2349,13 +2387,17 @@ app.post('/admin/manual-settle', async (req, res) => {
   res.redirect('/admin?manualMsg=ok');
 });
 
-// ONE-TIME FIX – re-settle Belgium vs Senegal as Draw
-app.get('/admin/fix-bel-sen-draw', async (req, res) => {
+// ADMIN – re-settle an already-settled fixture with a corrected result
+app.post('/admin/re-settle', async (req, res) => {
   if (!req.session.isAdmin) return res.redirect('/admin');
-  const FIXTURE_ID = '658ac8cbf214ca3cc150109b4ddc1e74';
-  const NEW_RESULT = 'Draw';
-  const log = await db.get(`settlementLog:${FIXTURE_ID}`);
-  if (!log) return res.send('No settlement log found.');
+  const { fixtureId, result: NEW_RESULT } = req.body || {};
+  if (!fixtureId || !['Home', 'Draw', 'Away'].includes(NEW_RESULT)) {
+    return res.redirect('/admin?resettleMsg=Invalid+fixture+or+result.');
+  }
+
+  const log = await db.get(`settlementLog:${fixtureId}`);
+  if (!log) return res.redirect('/admin?resettleMsg=No+settlement+log+found+for+that+fixture.');
+  if (log.result === NEW_RESULT) return res.redirect('/admin?resettleMsg=Fixture+is+already+settled+with+that+result.');
 
   // Step 1 – reverse old netPoints from each user
   const userReverseMap = {};
@@ -2367,7 +2409,7 @@ app.get('/admin/fix-bel-sen-draw', async (req, res) => {
     if (u) { u.totalNetPoints = Math.round((u.totalNetPoints + delta) * 10) / 10; await saveUser(u); }
   }
 
-  // Step 2 – recalculate pari-mutuel with Draw
+  // Step 2 – recalculate pari-mutuel with new result
   const totalStaked = log.totalStaked;
   const sumGross = log.entries.reduce((s, e) =>
     e.selection === NEW_RESULT ? s + e.stake * parseFloat(e.lockedOdds) : s, 0);
@@ -2388,7 +2430,7 @@ app.get('/admin/fix-bel-sen-draw', async (req, res) => {
     }
   }
 
-  // Step 3 – apply new netPoints to users and build new log entries
+  // Step 3 – apply new netPoints to users and build updated log entries
   const newEntries = [];
   const userNewMap = {};
   for (let i = 0; i < log.entries.length; i++) {
@@ -2407,19 +2449,18 @@ app.get('/admin/fix-bel-sen-draw', async (req, res) => {
   // Step 4 – update bets array
   const allBets = await getBets();
   for (const bet of allBets) {
-    if (bet.fixtureId !== FIXTURE_ID) continue;
+    if (bet.fixtureId !== fixtureId) continue;
     const entry = newEntries.find(e => e.user === bet.user && e.selection === bet.selection && e.stake === bet.stake);
     if (entry) { bet.status = entry.status; bet.netPoints = entry.netPoints; bet.result = NEW_RESULT; }
   }
   await updateBets(allBets);
 
-  // Step 5 – update settlement log
-  await db.set(`settlementLog:${FIXTURE_ID}`, { ...log, result: NEW_RESULT, entries: newEntries,
+  // Step 5 – overwrite settlement log
+  await db.set(`settlementLog:${fixtureId}`, { ...log, result: NEW_RESULT, entries: newEntries,
     settledAt: moment().tz(TIMEZONE).format('DD MMM YYYY, HH:mm z') });
 
-  res.send('<pre>Done. Belgium vs Senegal re-settled as Draw.\n\n' +
-    newEntries.map(e => `${e.user.padEnd(20)} ${e.selection.padEnd(6)} stake:${e.stake} → ${e.status} net:${e.netPoints}`).join('\n') +
-    '</pre><br><a href="/admin">← Admin</a>');
+  console.log(`[ReSettle] ${log.homeTeam} vs ${log.awayTeam} ${log.result} → ${NEW_RESULT}`);
+  res.redirect('/admin?resettleMsg=ok');
 });
 
 // ADMIN – email all settlement logs
