@@ -2349,6 +2349,79 @@ app.post('/admin/manual-settle', async (req, res) => {
   res.redirect('/admin?manualMsg=ok');
 });
 
+// ONE-TIME FIX – re-settle Belgium vs Senegal as Draw
+app.get('/admin/fix-bel-sen-draw', async (req, res) => {
+  if (!req.session.isAdmin) return res.redirect('/admin');
+  const FIXTURE_ID = '658ac8cbf214ca3cc150109b4ddc1e74';
+  const NEW_RESULT = 'Draw';
+  const log = await db.get(`settlementLog:${FIXTURE_ID}`);
+  if (!log) return res.send('No settlement log found.');
+
+  // Step 1 – reverse old netPoints from each user
+  const userReverseMap = {};
+  for (const e of log.entries) {
+    userReverseMap[e.user] = Math.round(((userReverseMap[e.user] || 0) - e.netPoints) * 10) / 10;
+  }
+  for (const [uid, delta] of Object.entries(userReverseMap)) {
+    const u = await getUserById(uid.toLowerCase());
+    if (u) { u.totalNetPoints = Math.round((u.totalNetPoints + delta) * 10) / 10; await saveUser(u); }
+  }
+
+  // Step 2 – recalculate pari-mutuel with Draw
+  const totalStaked = log.totalStaked;
+  const sumGross = log.entries.reduce((s, e) =>
+    e.selection === NEW_RESULT ? s + e.stake * parseFloat(e.lockedOdds) : s, 0);
+  let totalWinnerPayout = 0;
+  const tranchePayout = log.entries.map(e => {
+    if (e.selection !== NEW_RESULT) return 0;
+    const gross = e.stake * parseFloat(e.lockedOdds);
+    const payout = Math.round(Math.min(sumGross > 0 ? (gross / sumGross) * totalStaked : 0, gross) * 10) / 10;
+    totalWinnerPayout += payout;
+    return payout;
+  });
+  const undistributed = Math.round((totalStaked - totalWinnerPayout) * 10) / 10;
+  const totalLoserStake = log.entries.reduce((s, e) => e.selection !== NEW_RESULT ? s + e.stake : s, 0);
+  for (let i = 0; i < log.entries.length; i++) {
+    if (log.entries[i].selection !== NEW_RESULT) {
+      tranchePayout[i] = totalLoserStake > 0
+        ? Math.round(undistributed * (log.entries[i].stake / totalLoserStake) * 10) / 10 : 0;
+    }
+  }
+
+  // Step 3 – apply new netPoints to users and build new log entries
+  const newEntries = [];
+  const userNewMap = {};
+  for (let i = 0; i < log.entries.length; i++) {
+    const e = log.entries[i];
+    const status = e.selection === NEW_RESULT ? 'WON' : 'LOST';
+    const netPoints = Math.round((tranchePayout[i] - e.stake) * 10) / 10;
+    userNewMap[e.user] = Math.round(((userNewMap[e.user] || 0) + netPoints) * 10) / 10;
+    newEntries.push({ user: e.user, selection: e.selection, stake: e.stake,
+      lockedOdds: e.lockedOdds, status, finalPayout: tranchePayout[i], netPoints });
+  }
+  for (const [uid, delta] of Object.entries(userNewMap)) {
+    const u = await getUserById(uid.toLowerCase());
+    if (u) { u.totalNetPoints = Math.round((u.totalNetPoints + delta) * 10) / 10; await saveUser(u); }
+  }
+
+  // Step 4 – update bets array
+  const allBets = await getBets();
+  for (const bet of allBets) {
+    if (bet.fixtureId !== FIXTURE_ID) continue;
+    const entry = newEntries.find(e => e.user === bet.user && e.selection === bet.selection && e.stake === bet.stake);
+    if (entry) { bet.status = entry.status; bet.netPoints = entry.netPoints; bet.result = NEW_RESULT; }
+  }
+  await updateBets(allBets);
+
+  // Step 5 – update settlement log
+  await db.set(`settlementLog:${FIXTURE_ID}`, { ...log, result: NEW_RESULT, entries: newEntries,
+    settledAt: moment().tz(TIMEZONE).format('DD MMM YYYY, HH:mm z') });
+
+  res.send('<pre>Done. Belgium vs Senegal re-settled as Draw.\n\n' +
+    newEntries.map(e => `${e.user.padEnd(20)} ${e.selection.padEnd(6)} stake:${e.stake} → ${e.status} net:${e.netPoints}`).join('\n') +
+    '</pre><br><a href="/admin">← Admin</a>');
+});
+
 // ADMIN – email all settlement logs
 app.post('/admin/send-settlement-logs', async (req, res) => {
   if (!req.session.isAdmin) return res.redirect('/admin');
