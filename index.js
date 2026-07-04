@@ -97,6 +97,9 @@ async function fetchResultsFromOddsApi() {
 }
 
 const TIMEZONE = 'Asia/Kolkata';
+const MAX_STAKE_PER_FIXTURE = 500;
+const MIN_TRANCHE = 50;
+const STAKE_OPTIONS = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500];
 
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json({ limit: '20mb' }));
@@ -1084,11 +1087,11 @@ app.get('/', requireAuth, async (req, res) => {
               ${oddsHtml || '<p style="font-size:12px;color:#6b7280;margin:0 0 8px;">Odds not yet available.</p>'}
               ${(() => {
                 const staked = userBetMap[ev.id] || 0;
-                const remaining = 100 - staked;
+                const remaining = MAX_STAKE_PER_FIXTURE - staked;
                 if (!bettingOpen) return `<p style="font-size:12px;color:#6b7280;margin:6px 0 0;">Betting closed for this match.</p>`;
                 if (staked === 0) return `<a href="/match?id=${ev.id}" style="display:inline-block;margin-top:6px;font-size:13px;padding:7px 14px;background:#7c3aed;color:#fff;border-radius:8px;text-decoration:none;">Make prediction →</a>`;
-                if (remaining > 0) return `<a href="/match?id=${ev.id}" style="display:inline-block;margin-top:6px;font-size:13px;padding:7px 14px;background:#92400e;color:#fbbf24;border-radius:8px;text-decoration:none;">✏️ ${staked}/100 pts staked — add more →</a>`;
-                return `<a href="/match?id=${ev.id}" style="display:inline-block;margin-top:6px;font-size:13px;padding:7px 14px;background:#14532d;color:#22c55e;border-radius:8px;text-decoration:none;">✓ Fully staked (100 pts)</a>`;
+                if (remaining > 0) return `<a href="/match?id=${ev.id}" style="display:inline-block;margin-top:6px;font-size:13px;padding:7px 14px;background:#92400e;color:#fbbf24;border-radius:8px;text-decoration:none;">✏️ ${staked}/${MAX_STAKE_PER_FIXTURE} pts staked — add more →</a>`;
+                return `<a href="/match?id=${ev.id}" style="display:inline-block;margin-top:6px;font-size:13px;padding:7px 14px;background:#14532d;color:#22c55e;border-radius:8px;text-decoration:none;">✓ Fully staked (${MAX_STAKE_PER_FIXTURE} pts)</a>`;
               })()}
             </div>
           </details>`;
@@ -1187,7 +1190,7 @@ app.get('/match', requireAuth, async (req, res) => {
     const fixtureBets = allBets.filter(b => b.fixtureId === eventId);
     const myBets = fixtureBets.filter(b => b.user === req.session.userId);
     const myTotalStaked = myBets.reduce((s, b) => s + b.stake, 0);
-    const myRemaining = 100 - myTotalStaked;
+    const myRemaining = MAX_STAKE_PER_FIXTURE - myTotalStaked;
     const mySelection = myBets.length > 0 ? myBets[0].selection : null;
 
     const labelMap = { Home: `${home} wins`, Draw: 'Draw', Away: `${away} wins` };
@@ -1239,7 +1242,7 @@ app.get('/match', requireAuth, async (req, res) => {
 
     // Show form if betting open and stake remaining
     if (bettingOpen && myRemaining > 0) {
-      const availableStakes = [20, 40, 60, 80, 100].filter(s => s <= myRemaining);
+      const availableStakes = STAKE_OPTIONS.filter(s => s <= myRemaining);
       const defaultStake = availableStakes[availableStakes.length - 1];
       html += `
         <form method="POST" action="/bet">
@@ -1262,7 +1265,7 @@ app.get('/match', requireAuth, async (req, res) => {
       html += `
           <p style="margin:14px 0 6px;">Choose stake <span style="font-size:11px;color:#9ca3af;">(max ${myRemaining} pts remaining)</span>:</p>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
-            ${[20, 40, 60, 80, 100].map(s => {
+            ${STAKE_OPTIONS.map(s => {
               const disabled = s > myRemaining;
               const isDefault = s === defaultStake;
               return `
@@ -1391,7 +1394,7 @@ app.get('/match', requireAuth, async (req, res) => {
   }
 });
 
-// HANDLE BET – tranche-based, up to 100 pts per user per fixture
+// HANDLE BET – tranche-based, up to MAX_STAKE_PER_FIXTURE pts per user per fixture
 app.post('/bet', requireAuth, async (req, res) => {
   const { eventId, selection, leagueName } = req.body || {};
   if (!eventId || !selection) {
@@ -1413,17 +1416,17 @@ app.post('/bet', requireAuth, async (req, res) => {
 
   // Validate stake
   const stakeInput = parseInt(req.body.stake);
-  if (![20, 40, 60, 80, 100].includes(stakeInput)) {
+  if (!STAKE_OPTIONS.includes(stakeInput)) {
     return res.status(400).send('Invalid stake amount.');
   }
   const stake = stakeInput;
 
-  // Enforce 100-pt cap per fixture
+  // Enforce max stake cap per fixture
   const bets = await getBets();
   const existingTranches = bets.filter(b => b.user === user.userId && b.fixtureId === eventId);
   const alreadyStaked = existingTranches.reduce((s, b) => s + b.stake, 0);
-  if (alreadyStaked + stake > 100) {
-    return res.status(400).send(`Only ${100 - alreadyStaked} pts remaining for this match.`);
+  if (alreadyStaked + stake > MAX_STAKE_PER_FIXTURE) {
+    return res.status(400).send(`Only ${MAX_STAKE_PER_FIXTURE - alreadyStaked} pts remaining for this match.`);
   }
 
   // Lock in odds from the current snapshot at time of this tranche
@@ -1482,7 +1485,7 @@ app.post('/bet', requireAuth, async (req, res) => {
           </div>
           <div style="font-size:12px;color:#9ca3af;border-top:1px solid #374151;padding-top:10px;display:flex;justify-content:space-between;">
             <span>Total staked on match</span>
-            <strong style="color:#e5e7eb;">${totalNow} / 100 pts</strong>
+            <strong style="color:#e5e7eb;">${totalNow} / ${MAX_STAKE_PER_FIXTURE} pts</strong>
           </div>
           ${remaining > 0 ? `<div style="font-size:12px;color:#fbbf24;margin-top:4px;">${remaining} pts remaining — add another tranche from the match page.</div>` : `<div style="font-size:12px;color:#22c55e;margin-top:4px;">Fully staked on this match.</div>`}
         </div>
@@ -1665,8 +1668,8 @@ app.get('/rules', requireAuth, (req, res) => {
       <div style="font-size:13px;font-weight:700;color:#a78bfa;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">Making a Prediction</div>
       <ul style="margin:0;padding-left:18px;font-size:14px;line-height:1.8;color:#d1d5db;">
         <li>Each match offers three outcomes — <strong style="color:#e5e7eb;">Home win (1), Draw (X), Away win (2)</strong>.</li>
-        <li>Pick an outcome and choose a stake: <strong style="color:#a78bfa;">20 / 40 / 60 / 80 / 100 points</strong>.</li>
-        <li>You can stake up to <strong style="color:#e5e7eb;">100 points per match</strong> split across multiple tranches — e.g. 40 pts now, then 60 pts later.</li>
+        <li>Pick an outcome and choose a stake in multiples of <strong style="color:#a78bfa;">${MIN_TRANCHE} points</strong>, up to ${MAX_STAKE_PER_FIXTURE}.</li>
+        <li>You can stake up to <strong style="color:#e5e7eb;">${MAX_STAKE_PER_FIXTURE} points per match</strong> split across multiple tranches — e.g. ${MIN_TRANCHE} pts now, then more later.</li>
         <li>Each tranche <strong style="color:#e5e7eb;">locks in the odds at the moment it is placed</strong> — odds may change between tranches.</li>
         <li>Each tranche can be on <strong style="color:#e5e7eb;">any outcome</strong> — you can spread across Home, Draw, and Away on the same match.</li>
         <li>Predictions close <strong style="color:#e5e7eb;">10 minutes before kick-off</strong>. No changes or additions after that.</li>
@@ -2107,6 +2110,19 @@ app.get('/admin', async (req, res) => {
       <p style="font-size:12px;"><a href="/admin">↻ Refresh</a></p>
 
       <hr style="border-color:#1f2937;margin:16px 0;">
+      <h3 style="font-size:14px;color:#9ca3af;">Clear Pending Bets</h3>
+      ${(() => {
+        const clearMsg = req.query.clearMsg || '';
+        const feedback = clearMsg
+          ? `<p style="font-size:13px;color:#22c55e;margin-bottom:8px;">${clearMsg}</p>` : '';
+        return `${feedback}
+          <p style="font-size:12px;color:#9ca3af;margin-bottom:10px;">Removes all PENDING (not-yet-settled) bets so users can re-stake, e.g. after changing stake limits. Already-settled bets are untouched.</p>
+          <form method="POST" action="/admin/clear-pending-bets" onsubmit="return confirm('Delete all ${pending} pending bets? This cannot be undone.');">
+            <button type="submit" style="background:#dc2626;border-color:#dc2626;">Clear all pending bets (${pending})</button>
+          </form>`;
+      })()}
+
+      <hr style="border-color:#1f2937;margin:16px 0;">
       <h3 style="font-size:14px;color:#9ca3af;">Change admin password</h3>
       ${pwMsg ? `<p style="font-size:13px;color:${pwMsg === 'ok' ? '#22c55e' : '#ef4444'};">${pwMsg === 'ok' ? 'Password changed.' : pwMsg}</p>` : ''}
       <form method="POST" action="/admin/change-password">
@@ -2190,6 +2206,17 @@ app.post('/admin/run-job', async (req, res) => {
   `;
   html += htmlFooter('admin');
   res.send(html);
+});
+
+// ADMIN – clear all PENDING (unsettled) bets
+app.post('/admin/clear-pending-bets', async (req, res) => {
+  if (!req.session.isAdmin) return res.redirect('/admin');
+  const allBets = await getBets();
+  const remaining = allBets.filter(b => b.status !== 'PENDING');
+  const removed = allBets.length - remaining.length;
+  await updateBets(remaining);
+  console.log(`[ClearPendingBets] Removed ${removed} pending bets`);
+  res.redirect(`/admin?clearMsg=Removed+${removed}+pending+bets.`);
 });
 
 // ADMIN – change admin password
