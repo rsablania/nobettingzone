@@ -345,7 +345,6 @@ async function sendLeaderboardEmail() {
     await resend.emails.send({
       from: 'No Betting Zone <onboarding@resend.dev>',
       to: 'gletterdash@gmail.com',
-      bcc: "rushildtu@gmail.com",
       subject: `Leaderboard Update — ${date}`,
       html: `
         <h2 style="font-family:sans-serif;">🏆 No Betting Zone — Daily Leaderboard</h2>
@@ -882,7 +881,6 @@ app.post('/register', async (req, res) => {
     await resend.emails.send({
       from: 'No Betting Zone <onboarding@resend.dev>',
       to: 'gletterdash@gmail.com',
-      bcc: "rushildtu@gmail.com",
       subject: `OTP for new user: ${userId}`,
       html: `<p>New registration request:</p><ul><li><strong>Username:</strong> ${userId}</li><li><strong>Email:</strong> ${email}</li><li><strong>OTP:</strong> <span style="font-size:20px;letter-spacing:4px;font-weight:bold;">${otp}</span></li></ul><p>This code expires in 15 minutes.</p>`
     });
@@ -1069,7 +1067,6 @@ app.post('/forgot-password', async (req, res) => {
     await resend.emails.send({
       from: 'No Betting Zone <onboarding@resend.dev>',
       to: 'gletterdash@gmail.com',
-      bcc: "rushildtu@gmail.com",
       subject: `Password Reset OTP for: ${user.userId}`,
       html: `<p>Password reset request:</p><ul><li><strong>Username:</strong> ${user.userId}</li><li><strong>Email:</strong> ${email}</li><li><strong>OTP:</strong> <span style="font-size:20px;letter-spacing:4px;font-weight:bold;">${otp}</span></li></ul><p>This code expires in 15 minutes.</p>`
     });
@@ -2676,17 +2673,106 @@ app.get('/admin', async (req, res) => {
   } else {
     const pwMsg = req.query.pwMsg || '';
 
-    // Fetch pending OTPs
+    // // Fetch pending OTPs
+    // const now = Date.now();
+    // const otpKeys = await db.list('otp:');
+    // const otpRows = [];
+    // for (const key of otpKeys) {
+    //   const entry = await db.get(key);
+    //   if (!entry) continue;
+    //   const minsLeft = Math.round((entry.expiresAt - now) / 60000);
+    //   if (minsLeft <= 0) continue;
+    //   otpRows.push({ email: entry.email, userId: entry.userId, otp: entry.otp, minsLeft });
+    // }
+
+    // ======================================================
+// Fetch ALL pending OTPs (Login + Password Reset)
+// ======================================================
+
     const now = Date.now();
-    const otpKeys = await db.list('otp:');
     const otpRows = [];
-    for (const key of otpKeys) {
-      const entry = await db.get(key);
-      if (!entry) continue;
-      const minsLeft = Math.round((entry.expiresAt - now) / 60000);
-      if (minsLeft <= 0) continue;
-      otpRows.push({ email: entry.email, userId: entry.userId, otp: entry.otp, minsLeft });
+
+    // --------------------
+    // Login / Registration OTPs
+    // --------------------
+
+    const loginOtpKeys = await db.list("otp:");
+
+    for (const key of loginOtpKeys) {
+
+        const entry = await db.get(key);
+
+        if (!entry) continue;
+
+        const minsLeft = Math.ceil(
+            (entry.expiresAt - now) / 60000
+        );
+
+        if (minsLeft <= 0) continue;
+
+        otpRows.push({
+
+            type: "Login",
+
+            key,
+
+            email: entry.email || key.replace("otp:", ""),
+
+            userId: entry.userId || "-",
+
+            otp: entry.otp,
+
+            minsLeft,
+
+            expiresAt: entry.expiresAt
+
+        });
+
     }
+
+    // --------------------
+    // Password Reset OTPs
+    // --------------------
+
+    const resetOtpKeys = await db.list("reset-otp:");
+
+    for (const key of resetOtpKeys) {
+
+        const entry = await db.get(key);
+
+        if (!entry) continue;
+
+        const minsLeft = Math.ceil(
+            (entry.expiresAt - now) / 60000
+        );
+
+        if (minsLeft <= 0) continue;
+
+        otpRows.push({
+
+            type: "Password Reset",
+
+            key,
+
+            email: entry.email,
+
+            userId: entry.userId || "-",
+
+            otp: entry.otp,
+
+            minsLeft,
+
+            expiresAt: entry.expiresAt
+
+        });
+
+    }
+
+    // Show earliest expiry first
+
+    otpRows.sort(
+        (a, b) => a.expiresAt - b.expiresAt
+    );
 
     html += `
       <h3 style="font-size:14px;color:#9ca3af;margin-top:0;">Run daily job</h3>
@@ -2776,18 +2862,128 @@ app.get('/admin', async (req, res) => {
       })()}
 
       <hr style="border-color:#1f2937;margin:16px 0;">
-      <h3 style="font-size:14px;color:#9ca3af;">Pending OTPs</h3>
-      ${otpRows.length === 0
-        ? `<p style="color:#9ca3af;font-size:13px;">No pending OTPs right now.</p>`
-        : `<p style="font-size:12px;color:#9ca3af;margin-bottom:8px;">Share these codes with users who are trying to register.</p>
-           ${otpRows.map(r => `
-             <div class="card">
-               <div style="font-size:13px;color:#9ca3af;">${r.email} &nbsp;·&nbsp; <strong style="color:#e5e7eb;">@${r.userId}</strong></div>
-               <div style="font-size:28px;font-weight:700;letter-spacing:8px;margin:8px 0;color:#22c55e;">${r.otp}</div>
-               <div style="font-size:12px;color:#f59e0b;">Expires in ${r.minsLeft} min</div>
-             </div>`).join('')}`
-      }
-      <p style="font-size:12px;"><a href="/admin">↻ Refresh</a></p>
+        <h3 style="font-size:14px;color:#9ca3af;">
+        Pending OTPs
+        </h3>
+
+        ${
+        otpRows.length === 0
+
+        ? `<p style="color:#9ca3af;font-size:13px;">
+        No pending OTPs.
+        </p>`
+
+        : `
+
+        <p style="font-size:12px;color:#9ca3af;margin-bottom:10px;">
+        Showing Login + Password Reset OTPs
+        </p>
+
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+
+        <tr>
+
+        <th align="left">Type</th>
+
+        <th align="left">Email</th>
+
+        <th align="left">User</th>
+
+        <th align="center">OTP</th>
+
+        <th align="center">Expires</th>
+
+        <th align="center">Action</th>
+
+        </tr>
+
+        ${otpRows.map(r => `
+
+        <tr style="border-top:1px solid #374151;">
+
+        <td>
+
+        <span style="
+        padding:3px 8px;
+        border-radius:6px;
+        font-size:11px;
+        background:${
+        r.type === "Login"
+        ? "#1d4ed8"
+        : "#7c3aed"
+        };
+        ">
+
+        ${r.type}
+
+        </span>
+
+        </td>
+
+        <td>${r.email}</td>
+
+        <td>${r.userId}</td>
+
+        <td style="
+        font-weight:bold;
+        font-size:18px;
+        letter-spacing:3px;
+        color:#22c55e;
+        text-align:center;
+        ">
+
+        ${r.otp}
+
+        </td>
+
+        <td style="text-align:center;">
+
+        ${r.minsLeft} min
+
+        </td>
+
+        <td style="text-align:center;">
+
+        <form
+        method="POST"
+        action="/admin/delete-otp"
+        style="margin:0;"
+        >
+
+        <input
+        type="hidden"
+        name="key"
+        value="${r.key}"
+        >
+
+        <button
+        style="
+        background:#dc2626;
+        border-color:#dc2626;
+        padding:4px 10px;
+        "
+        >
+
+        Delete
+
+        </button>
+
+        </form>
+
+        </td>
+
+        </tr>
+
+        `).join("")}
+
+        </table>
+
+        `
+        }
+
+        <p style="font-size:12px;margin-top:10px;">
+        <a href="/admin">↻ Refresh</a>
+        </p>
 
       <hr style="border-color:#1f2937;margin:16px 0;">
       <h3 style="font-size:14px;color:#9ca3af;">Clear Pending Bets</h3>
@@ -3255,7 +3451,6 @@ app.post('/admin/send-settlement-logs', async (req, res) => {
     await resend.emails.send({
       from: 'No Betting Zone <onboarding@resend.dev>',
       to: 'gletterdash@gmail.com',
-      bcc: "rushildtu@gmail.com",
       subject: `Compiled Report — ${logs.length} match${logs.length !== 1 ? 'es' : ''} settled`,
       html: `
         <h2 style="font-family:sans-serif;">⚽ No Betting Zone — Compiled Settlement Report</h2>
