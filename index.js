@@ -135,58 +135,7 @@ const SOCCER_SPORT_KEYS = [
 let fixtureSnapshot = [];   // array of Odds API event objects
 let snapshotMeta = null;    // { fetchedAt, creditsLeft }
 
-const memoryCache = {
-  messages: null,
-  bets: null,
-  logs: null,
-  users: null,
-  lastUpdated: 0 
-};
 
-const CACHE_DURATION = 2 * 60 * 60 * 1000; // 2 hours
-
-async function getCachedData() {
-  const now = Date.now();
-  
-  // If cache is fresh (less than 5 mins old), return it immediately
-  if (memoryCache.lastUpdated > 0 && (now - memoryCache.lastUpdated < CACHE_DURATION)) {
-    return memoryCache;
-  }
-
-  // Otherwise, refresh the cache
-  return await refreshGlobalCache();
-}
-
-// THE MASTER REFRESHER
-async function refreshGlobalCache() {
-  console.log("[Cache] Refreshing fixtures and logs only...");
-
-  // 1. Fetch logs (Historical Results)
-  const logKeys = await db.list('settlementLog:');
-  const logs = [];
-  for (const k of logKeys) {
-    const data = await db.get(k);
-    if (data) logs.push(data);
-  }
-
-  // 2. Fetch users
-  const userKeys = await db.list('user:');
-  const users = [];
-  for (const k of userKeys) {
-    const data = await db.get(k);
-    if (data) users.push(data);
-  }
-
-  // 3. Populate memoryCache (Note: 'bets' is removed here)
-  memoryCache.logs = logs.sort((a, b) => 
-    moment(b.settledAt, 'DD MMM YYYY, HH:mm z').valueOf() - 
-    moment(a.settledAt, 'DD MMM YYYY, HH:mm z').valueOf()
-  );
-  memoryCache.users = users.sort((a, b) => b.totalNetPoints - a.totalNetPoints);
-  memoryCache.lastUpdated = Date.now();
-  
-  return memoryCache;
-}
 
 // Load the persisted snapshot from Replit DB into memory on startup
 async function loadFixturesFromDB() {
@@ -521,9 +470,9 @@ async function getAdminPassword() {
 }
 
 async function addBet(bet) {
-  const allBets = (await db.get('bets')) || [];
-  allBets.push(bet);
-  await db.set('bets', allBets);
+  const allBets = await getBets();
+    allBets.push(bet);
+    await updateBets(allBets);
 }
 
 // OPTIMIZED: Get Bets
@@ -534,24 +483,21 @@ async function getBets() {
 
 // OPTIMIZED: Get Settlement Logs (Historical Results)
 async function getSettlementLogs() {
-  // 1. If we already have them in RAM, return them instantly (0ms)
-  if (memoryCache.logs) return memoryCache.logs;
 
-  // 2. Otherwise, fetch them from the database (only happens once!)
-  const logKeys = await db.list('settlementLog:');
-  const allLogs = [];
-  
-  for (const key of logKeys) {
-    const logData = await db.get(key);
-    if (logData) allLogs.push(logData);
-  }
+    const logKeys = await db.list("settlementLog:");
+    const logs = (
+    await Promise.all(
+        logKeys.map(key => db.get(key))
+    )
+).filter(Boolean);
 
-  // Optional: Sort them so the newest dates are at the top
-  allLogs.sort((a, b) => new Date(b.date) - new Date(a.date));
+    logs.sort((a, b) =>
+        moment(b.settledAt, "DD MMM YYYY, HH:mm z").valueOf() -
+        moment(a.settledAt, "DD MMM YYYY, HH:mm z").valueOf()
+    );
 
-  // 3. Save to RAM for the next person
-  memoryCache.logs = allLogs;
-  return allLogs;
+    return logs;
+
 }
 
 async function addMessage(msg) {
@@ -562,17 +508,12 @@ async function addMessage(msg) {
 
 // OPTIMIZED: Get Messages
 async function getMessages() {
-  if (memoryCache.messages) return memoryCache.messages; // Read from RAM (0ms)
-  
-  const msgs = await db.get('messages') || [];
-  memoryCache.messages = msgs; // Save to RAM for next time
-  return msgs;
+    return await db.get("messages") || [];
 }
 
 // OPTIMIZED: Update Bets
 async function updateBets(newBets) {
-  await db.set('bets', newBets); // Save to DB
-  memoryCache.bets = newBets;    // Immediately update RAM
+    await db.set("bets", newBets);
 }
 
 /* ---------------- SETTLEMENT ENGINE ---------------- */
@@ -994,6 +935,8 @@ app.post('/forgot-password', async (req, res) => {
       html: `<p>Password reset request:</p><ul><li><strong>Username:</strong> ${user.userId}</li><li><strong>Email:</strong> ${email}</li><li><strong>OTP:</strong> <span style="font-size:20px;letter-spacing:4px;font-weight:bold;">${otp}</span></li></ul><p>This code expires in 15 minutes.</p>`
     });
 
+    return res.send("OTP saved successfully");
+
     res.redirect(`/forgot-password-otp-info?email=${encodeURIComponent(email)}`);
   } catch (e) {
     console.error('[ForgotPassword]', e.message);
@@ -1087,19 +1030,11 @@ app.post('/reset-password', async (req, res) => {
 /* ---------------- ROUTES ---------------- */
 
 // EDIT USERNAME – GET
-app.get('/edit-username', requireAuth, async (req, res) => {
-  
-  req.session.userId = newUsername;
-req.session.displayName = newUsername;
-
-// Add this:
-req.session.save((err) => {
-  if (err) console.error("Session save failed", err);
-  res.redirect('/summary');
-});
-  
+app.get('/edit-username', requireAuth, async (req, res) => {  
   const user = await getUserById(req.session.userId);
-  if (!user) return res.redirect('/login');
+
+  if (!user)
+      return res.redirect('/login');
   
   const err = req.query.error || '';
   let html = htmlHeader('Edit Username - No Betting Zone');
@@ -1134,53 +1069,169 @@ req.session.save((err) => {
   res.send(html);
 });
 
+async function migrateUsername(oldUsername, newUsername) {
+
+    const user = await getUserById(oldUsername);
+
+    if (!user)
+        throw new Error(`User ${oldUsername} not found`);
+
+    if (await getUserById(newUsername))
+        throw new Error(`Username ${newUsername} already exists`);
+
+    console.log(`[Migration] ${oldUsername} -> ${newUsername}`);
+
+    // ---------------- Create new user ----------------
+
+    const newUser = {
+        ...user,
+        userId: newUsername,
+        displayName: newUsername,
+        usernameChanged: true
+    };
+
+    await db.set(`user:${newUsername.toLowerCase()}`, newUser);
+
+    // ---------------- Bets ----------------
+
+    const bets = await getBets();
+
+    let migratedBets = 0;
+
+    for (const bet of bets) {
+
+        if (bet.user === oldUsername) {
+            bet.user = newUsername;
+            migratedBets++;
+        }
+
+    }
+
+    await updateBets(bets);
+
+    // ---------------- Messages ----------------
+
+    const messages = await getMessages();
+
+    let migratedMessages = 0;
+
+    for (const msg of messages) {
+
+        if (msg.name === oldUsername) {
+            msg.name = newUsername;
+            migratedMessages++;
+        }
+
+    }
+
+    await db.set("messages", messages);
+
+    // ---------------- Settlement Logs ----------------
+
+    const logKeys = await db.list("settlementLog:");
+
+    let migratedLogs = 0;
+
+    for (const key of logKeys) {
+
+        const log = await db.get(key);
+
+        if (!log)
+            continue;
+
+        let changed = false;
+
+        for (const entry of log.entries) {
+
+            if (entry.user === oldUsername) {
+
+                entry.user = newUsername;
+                migratedLogs++;
+                changed = true;
+
+            }
+
+        }
+
+        if (changed)
+            await db.set(key, log);
+
+    }
+
+    // ---------------- Email Mapping ----------------
+
+    await db.set(
+        `email:${user.email.toLowerCase()}`,
+        newUsername
+    );
+
+    // ---------------- Delete old user ----------------
+
+    await db.delete(`user:${oldUsername.toLowerCase()}`);
+
+    return {
+        migratedBets,
+        migratedMessages,
+        migratedLogs
+    };
+
+}
+
+async function getCurrentUser(req) {
+
+    if (!req.session.email)
+        return null;
+
+    const currentUsername = await db.get(
+        `email:${req.session.email.toLowerCase()}`
+    );
+
+    if (!currentUsername)
+        return null;
+
+    return await getUserById(currentUsername);
+
+}
+
 // EDIT USERNAME – POST (The Migration Engine)
 // EDIT USERNAME – POST (The Migration Engine - Async)
 app.post('/edit-username', requireAuth, async (req, res) => {
-  const { newUsername } = req.body || {};
-  const oldId = req.session.userId;
-  // ... (keep your existing validation logic) ...
 
-  try {
-    const user = await getUserById(oldId);
-    
-    // 1. Update the user record
-    const newUser = { ...user, userId: newUsername, displayName: newUsername, usernameChanged: true };
-    await db.set(`user:${newUsername.toLowerCase()}`, newUser);
-    await db.delete(`user:${oldId.toLowerCase()}`);
+    try {
 
-    // 2. BLOCKING MIGRATION (Wait for this to finish)
-    console.log(`[Migration] Starting sync migration for ${oldId} -> ${newUsername}`);
-    
-    // Migrate Bets
-    const allBets = await getBets();
-    allBets.forEach(b => { if (b.user === oldId) b.user = newUsername; });
-    await updateBets(allBets);
+        const oldUsername = req.session.userId;
+        const newUsername = (req.body.newUsername || "").trim();
 
-    // Migrate Messages
-    const allMsgs = await getMessages();
-    allMsgs.forEach(m => { if (m.name === oldId) m.name = newUsername; });
-    await db.set('messages', allMsgs);
+        // validation...
 
-    // Migrate Settlement Logs
-    const logKeys = await db.list('settlementLog:');
-    for (const key of logKeys) {
-      const log = await db.get(key);
-      if (!log) continue;
-      let logModified = false;
-      log.entries.forEach(e => { if (e.user === oldId) { e.user = newUsername; logModified = true; }});
-      if (logModified) await db.set(key, log);
+        const stats = await migrateUsername(
+            oldUsername,
+            newUsername
+        );
+
+        req.session.userId = newUsername;
+        req.session.displayName = newUsername;
+
+        req.session.save(err => {
+
+            if (err)
+                return res.redirect('/login');
+
+            console.log(stats);
+
+            res.redirect('/summary');
+
+        });
+
+    }
+    catch (err) {
+
+        console.error(err);
+
+        res.redirect('/edit-username?error=' + encodeURIComponent(err.message));
+
     }
 
-    // 3. Update session and redirect
-    req.session.userId = newUsername;
-    req.session.displayName = newUsername;
-    req.session.save(() => res.redirect('/summary'));
-
-  } catch (e) {
-    console.error('[Migration Error]', e);
-    res.redirect('/edit-username?error=Migration+failed.+Contact+admin.');
-  }
 });
 
 
@@ -1331,24 +1382,11 @@ app.get('/', requireAuth, async (req, res) => {
   }
 });
 
-// app.get('/debug-cache', async (req, res) => {
-//   const data = await getCachedData();
-//   res.json({
-//     betsCount: data.bets?.length,
-//     logsCount: data.logs?.length,
-//     lastUpdated: new Date(data.lastUpdated).toISOString()
-//   });
-// });
-
-// app.get('/debug-keys', async (req, res) => {
-//   const allKeys = await db.list(''); // This lists ALL keys in the DB
-//   res.json(allKeys);
-// });
-
 // USER PAGE – see own bets (session-based)
 app.get('/me', requireAuth, async (req, res) => {
   const user = await getUserById(req.session.userId);
-  if (!user) return res.redirect('/login');
+  if (!user)
+      return res.redirect('/login');
   const bets = (await getBets()).filter(b => b.user === user.userId);
 
   let html = htmlHeader(`${user.displayName} - No Betting Zone`);
@@ -1388,23 +1426,31 @@ app.get('/me', requireAuth, async (req, res) => {
   res.send(html);
 });
 
-app.get('/admin/repair-user/:oldName/:newName', async (req, res) => {
-  const { oldName, newName } = req.params;
-  
-  // 1. Repair Bets
-  const allBets = await getBets();
-  allBets.forEach(b => { if (b.user === oldName) b.user = newName; });
-  await updateBets(allBets);
+app.get('/admin/repair-user/:old/:new', async (req,res)=>{
 
-  // 2. Repair Logs
-  const logKeys = await db.list('settlementLog:');
-  for (const key of logKeys) {
-    const log = await db.get(key);
-    log.entries.forEach(e => { if (e.user === oldName) e.user = newName; });
-    await db.set(key, log);
-  }
+    try{
 
-  res.send(`Repaired data for ${oldName} -> ${newName}`);
+        const stats =
+            await migrateUsername(
+                req.params.old,
+                req.params.new
+            );
+
+        res.json({
+            success:true,
+            stats
+        });
+
+    }
+    catch(err){
+
+        res.status(500).json({
+            success:false,
+            error:err.message
+        });
+
+    }
+
 });
 
 // MATCH PAGE – single match view + 1X2 prediction
@@ -1650,6 +1696,120 @@ app.get('/match', requireAuth, async (req, res) => {
   }
 });
 
+// ADMIN - Delete User Bets
+app.get('/admin/delete-user-bets/:username', async (req, res) => {
+  
+
+    const username = req.params.username;
+    const pendingOnly = req.query.pending === "true";
+
+  if (!username || !username.trim()) {
+    return res.status(400).json({
+        success: false,
+        error: "Username required"
+    });
+}
+
+    try {
+
+        const bets = await getBets();
+
+        const originalCount = bets.length;
+
+        const filtered = bets.filter(b => {
+
+            const isUser =
+                b.user.toLowerCase() === username.toLowerCase();
+
+            if (!isUser)
+                return true;
+
+            if (!pendingOnly)
+                return false;
+
+            return b.status !== "PENDING";
+
+        });
+
+        const removed = originalCount - filtered.length;
+
+        await updateBets(filtered);
+
+
+        res.json({
+            success: true,
+            username,
+            pendingOnly,
+            removedBets: removed,
+            remainingBets: filtered.length
+        });
+
+    } catch (err) {
+
+        console.error(err);
+
+        res.status(500).json({
+            success: false,
+            error: err.message
+        });
+
+    }
+
+});
+
+app.get("/admin/verify-migration/:old/:new", async (req, res) => {
+
+    const oldId = req.params.old;
+    const newId = req.params.new;
+
+    const report = {};
+
+    report.oldUser = await getUserById(oldId);
+    report.newUser = await getUserById(newId);
+
+    if (report.newUser) {
+        report.emailMapping = await db.get(
+            `email:${report.newUser.email.toLowerCase()}`
+        );
+    }
+
+    const bets = await getBets();
+
+    report.oldBets = bets.filter(b => b.user === oldId).length;
+    report.newBets = bets.filter(b => b.user === newId).length;
+
+    const messages = await getMessages();
+
+    report.oldMessages = messages.filter(m => m.name === oldId).length;
+    report.newMessages = messages.filter(m => m.name === newId).length;
+
+    const logKeys = await db.list("settlementLog:");
+
+    let oldLogs = 0;
+    let newLogs = 0;
+
+    for (const key of logKeys) {
+
+        const log = await db.get(key);
+
+        if (!log) continue;
+
+        for (const entry of log.entries) {
+
+            if (entry.user === oldId) oldLogs++;
+
+            if (entry.user === newId) newLogs++;
+
+        }
+
+    }
+
+    report.oldLogs = oldLogs;
+    report.newLogs = newLogs;
+
+    res.json(report);
+
+});
 
 
 app.post('/bet', requireAuth, async (req, res) => {
@@ -1660,6 +1820,9 @@ app.post('/bet', requireAuth, async (req, res) => {
 
   try {
     const user = await getUserById(req.session.userId);
+
+    if (!user)
+        return res.redirect('/login');
     if (!user) return res.redirect('/login');
     const event = await getEventById(eventId);
     if (!event) return res.status(400).send('Match not found');
@@ -1770,10 +1933,12 @@ app.post('/bet', requireAuth, async (req, res) => {
 // MY PREDICTIONS SUMMARY PAGE
 app.get('/summary', requireAuth, async (req, res) => {
   const user = await getUserById(req.session.userId);
-  if (!user) return res.redirect('/login');
+
+  if (!user)
+      return res.redirect('/login');
 
   // Fetch only non-bet data from cache, fetch bets fresh
-  const { lastUpdated } = await getCachedData(); 
+  const lastUpdated = snapshotMeta?.fetchedAt || "Never";
   const allBets = await getBets(); // Always real-time
   
   const bets = allBets.filter(b => b.user === user.userId);
@@ -2000,11 +2165,37 @@ app.get('/rules', requireAuth, (req, res) => {
   res.send(html);
 });
 
+async function getResultsData() {
+  const logKeys = await db.list('settlementLog:');
+  const logs = [];
+
+  for (const key of logKeys) {
+    const log = await db.get(key);
+    if (log) logs.push(log);
+  }
+
+  logs.sort((a, b) =>
+    moment(b.settledAt, 'DD MMM YYYY, HH:mm z').valueOf() -
+    moment(a.settledAt, 'DD MMM YYYY, HH:mm z').valueOf()
+  );
+
+  const userKeys = await db.list('user:');
+  const users = (
+    await Promise.all(
+        userKeys.map(key => db.get(key))
+    )
+).filter(Boolean);
+
+  users.sort((a, b) => b.totalNetPoints - a.totalNetPoints);
+
+  return { logs, users };
+}
+
 // RESULTS – leaderboard + all settled matches inline
 // RESULTS – leaderboard + all settled matches inline
 app.get('/results', requireAuth, async (req, res) => {
   // 1. Get cached data (Results and Leaderboard are pre-calculated)
-  const { logs, users } = await getCachedData();
+  const { logs, users } = await getResultsData();
 
   // 2. Prepare metadata
   const lastUpdated = logs.length ? logs[0].settledAt : null;
@@ -2929,11 +3120,8 @@ app.post('/forum', requireAuth, async (req, res) => {
 
 // START SERVER — load persisted snapshot into memory before accepting requests
 // START SERVER — load persisted snapshot into memory before accepting requests
-loadFixturesFromDB().then(async () => {
-  // 1. Warm up the cache immediately on startup
-  await refreshGlobalCache(); 
-  
-  app.listen(PORT, () => {
-    console.log(`No Betting Zone server running on port ${PORT}`);
-  });
+loadFixturesFromDB().then(() => {
+    app.listen(PORT, () => {
+        console.log(`Server running on port ${PORT}`);
+    });
 });
