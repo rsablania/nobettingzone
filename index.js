@@ -921,14 +921,37 @@ app.post('/forgot-password', async (req, res) => {
   const { email } = req.body || {};
   if (!email) return res.redirect('/forgot-password?error=Please+enter+your+email.');
   try {
-    const user = await getUserByEmail(email);
-    if (!user) return res.redirect('/forgot-password?error=No+account+found+with+that+email.');
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    await db.set(`reset-otp:${email.toLowerCase()}`, {
-      otp, userId: user.userId, email,
-      expiresAt: Date.now() + 15 * 60 * 1000
-    });
+      console.log("1. Forgot password request received");
+
+      const email = (req.body.email || "").trim().toLowerCase();
+      console.log("2. Email:", email);
+
+      const username = await db.get(`email:${email}`);
+      console.log("3. Username:", username);
+
+      const user = await getUserById(username);
+      console.log("4. User:", user);
+
+      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+      console.log("5. OTP generated:", otp);
+
+      await db.set(`reset-otp:${email}`, {
+          otp,
+          userId: user.userId,
+          email,
+          expiresAt: Date.now() + 15 * 60 * 1000
+      });
+      console.log("6. OTP saved");
+
+    // const user = await getUserByEmail(email);
+    // if (!user) return res.redirect('/forgot-password?error=No+account+found+with+that+email.');
+
+    // const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    // await db.set(`reset-otp:${email.toLowerCase()}`, {
+    //   otp, userId: user.userId, email,
+    //   expiresAt: Date.now() + 15 * 60 * 1000
+    // });
 
     await resend.emails.send({
       from: 'No Betting Zone <onboarding@resend.dev>',
@@ -938,7 +961,7 @@ app.post('/forgot-password', async (req, res) => {
       html: `<p>Password reset request:</p><ul><li><strong>Username:</strong> ${user.userId}</li><li><strong>Email:</strong> ${email}</li><li><strong>OTP:</strong> <span style="font-size:20px;letter-spacing:4px;font-weight:bold;">${otp}</span></li></ul><p>This code expires in 15 minutes.</p>`
     });
 
-    return res.send("OTP saved successfully");
+    // return res.send("OTP saved successfully");
 
     res.redirect(`/forgot-password-otp-info?email=${encodeURIComponent(email)}`);
   } catch (e) {
