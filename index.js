@@ -1088,6 +1088,16 @@ app.post('/reset-password', async (req, res) => {
 
 // EDIT USERNAME – GET
 app.get('/edit-username', requireAuth, async (req, res) => {
+  
+  req.session.userId = newUsername;
+req.session.displayName = newUsername;
+
+// Add this:
+req.session.save((err) => {
+  if (err) console.error("Session save failed", err);
+  res.redirect('/summary');
+});
+  
   const user = await getUserById(req.session.userId);
   if (!user) return res.redirect('/login');
   
@@ -1129,91 +1139,47 @@ app.get('/edit-username', requireAuth, async (req, res) => {
 app.post('/edit-username', requireAuth, async (req, res) => {
   const { newUsername } = req.body || {};
   const oldId = req.session.userId;
-  
-  if (!newUsername) return res.redirect('/edit-username?error=Username+cannot+be+empty.');
-  if (newUsername.length < 3 || newUsername.length > 20) return res.redirect('/edit-username?error=Username+must+be+3-20+characters.');
-  if (!/^[a-zA-Z0-9_]+$/.test(newUsername)) return res.redirect('/edit-username?error=Username+can+only+contain+letters,+numbers,+and+underscores.');
-  if (newUsername.toLowerCase() === oldId.toLowerCase()) return res.redirect('/edit-username?error=That+is+already+your+username.');
+  // ... (keep your existing validation logic) ...
 
   try {
     const user = await getUserById(oldId);
-    if (!user) return res.redirect('/login');
-    if (user.usernameChanged) return res.redirect('/edit-username?error=You+have+already+changed+your+username+once.');
-
-    // Check if new username is taken
-    const existing = await getUserById(newUsername);
-    if (existing) return res.redirect('/edit-username?error=Username+is+already+taken.');
-
-    // 1. Update User DB & Email Pointer (Must happen immediately)
-    const newUser = { 
-      ...user, 
-      userId: newUsername, 
-      displayName: newUsername, 
-      usernameChanged: true 
-    };
+    
+    // 1. Update the user record
+    const newUser = { ...user, userId: newUsername, displayName: newUsername, usernameChanged: true };
     await db.set(`user:${newUsername.toLowerCase()}`, newUser);
-    await db.set(`email:${user.email.toLowerCase()}`, newUsername);
     await db.delete(`user:${oldId.toLowerCase()}`);
 
-    // 2. Update active session immediately
+    // 2. BLOCKING MIGRATION (Wait for this to finish)
+    console.log(`[Migration] Starting sync migration for ${oldId} -> ${newUsername}`);
+    
+    // Migrate Bets
+    const allBets = await getBets();
+    allBets.forEach(b => { if (b.user === oldId) b.user = newUsername; });
+    await updateBets(allBets);
+
+    // Migrate Messages
+    const allMsgs = await getMessages();
+    allMsgs.forEach(m => { if (m.name === oldId) m.name = newUsername; });
+    await db.set('messages', allMsgs);
+
+    // Migrate Settlement Logs
+    const logKeys = await db.list('settlementLog:');
+    for (const key of logKeys) {
+      const log = await db.get(key);
+      if (!log) continue;
+      let logModified = false;
+      log.entries.forEach(e => { if (e.user === oldId) { e.user = newUsername; logModified = true; }});
+      if (logModified) await db.set(key, log);
+    }
+
+    // 3. Update session and redirect
     req.session.userId = newUsername;
     req.session.displayName = newUsername;
-
-    // 3. SEND RESPONSE IMMEDIATELY (Instant page reload for the user)
-    res.redirect('/summary');
-
-    // 4. FIRE AND FORGET: Background Migration Task
-    // We do NOT use 'await' here. This runs independently in the background.
-    (async () => {
-      try {
-        console.log(`[Migration Started] Migrating data for ${oldId} -> ${newUsername}`);
-        
-        // Migrate Pending & Settled Bets
-        const allBets = await getBets();
-        let betsModified = false;
-        allBets.forEach(b => {
-          if (b.user === oldId) {
-            b.user = newUsername;
-            betsModified = true;
-          }
-        });
-        if (betsModified) await updateBets(allBets);
-
-        // Migrate Forum Messages
-        const allMsgs = await getMessages();
-        let msgsModified = false;
-        allMsgs.forEach(m => {
-          if (m.name === oldId) {
-            m.name = newUsername;
-            msgsModified = true;
-          }
-        });
-        if (msgsModified) await db.set('messages', allMsgs);
-
-        // Migrate Settlement Logs (Historical Results)
-        const logKeys = await db.list('settlementLog:');
-        for (const key of logKeys) {
-          const log = await db.get(key);
-          if (!log) continue;
-          let logModified = false;
-          log.entries.forEach(e => {
-            if (e.user === oldId) {
-              e.user = newUsername;
-              logModified = true;
-            }
-          });
-          if (logModified) await db.set(key, log);
-        }
-        
-        console.log(`[Migration Complete] Data migrated successfully for ${newUsername}`);
-      } catch (bgError) {
-        console.error(`[Migration Error] Failed migrating data for ${newUsername}:`, bgError.message);
-      }
-    })();
+    req.session.save(() => res.redirect('/summary'));
 
   } catch (e) {
-    console.error('[EditUsername Error]', e.message);
-    res.redirect('/edit-username?error=Something+went+wrong.+Please+try+again.');
+    console.error('[Migration Error]', e);
+    res.redirect('/edit-username?error=Migration+failed.+Contact+admin.');
   }
 });
 
@@ -1420,6 +1386,25 @@ app.get('/me', requireAuth, async (req, res) => {
 
   html += htmlFooter('home');
   res.send(html);
+});
+
+app.get('/admin/repair-user/:oldName/:newName', async (req, res) => {
+  const { oldName, newName } = req.params;
+  
+  // 1. Repair Bets
+  const allBets = await getBets();
+  allBets.forEach(b => { if (b.user === oldName) b.user = newName; });
+  await updateBets(allBets);
+
+  // 2. Repair Logs
+  const logKeys = await db.list('settlementLog:');
+  for (const key of logKeys) {
+    const log = await db.get(key);
+    log.entries.forEach(e => { if (e.user === oldName) e.user = newName; });
+    await db.set(key, log);
+  }
+
+  res.send(`Repaired data for ${oldName} -> ${newName}`);
 });
 
 // MATCH PAGE – single match view + 1X2 prediction
