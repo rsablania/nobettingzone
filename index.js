@@ -1081,12 +1081,27 @@ app.get('/edit-username', requireAuth, async (req, res) => {
       <p style="font-size:13px;color:#9ca3af;margin-bottom:16px;">You can only change your username <strong>ONCE</strong>. Choose carefully!</p>
       ${err ? `<p style="color:#ef4444;font-size:13px;">${err}</p>` : ''}
       
-      <form method="POST" action="/edit-username" onsubmit="return confirm('Are you sure? You will not be able to change this again.');">
+      <form method="POST" action="/edit-username" onsubmit="disableMigrationButton()"">
         <p style="margin-bottom:4px;font-size:13px;">New Username</p>
         <input name="newUsername" placeholder="e.g. NewName07" required 
           style="width:100%;margin-bottom:16px;">
-        <button type="submit" style="width:100%;background:#f59e0b;color:#000;">Change Username</button>
+        <button id="changeUsernameBtn" type="submit">
+    Change Username
+</button>
       </form>
+              <script>
+function disableMigrationButton() {
+
+    const btn = document.getElementById("changeUsernameBtn");
+
+    if (btn) {
+        btn.disabled = true;
+        btn.innerText = "Updating...";
+    }
+
+    return true;
+}
+</script>
       <p style="margin-top:16px;"><a href="/summary">← Back to My Stats</a></p>
     `;
   }
@@ -1097,109 +1112,158 @@ app.get('/edit-username', requireAuth, async (req, res) => {
 
 async function migrateUsername(oldUsername, newUsername) {
 
-    const user = await getUserById(oldUsername);
+    oldUsername = oldUsername.trim();
+    newUsername = newUsername.trim();
 
-    if (!user)
-        throw new Error(`User ${oldUsername} not found`);
+    const lockKey = `migration:${oldUsername.toLowerCase()}`;
 
-    if (await getUserById(newUsername))
-        throw new Error(`Username ${newUsername} already exists`);
-
-    console.log(`[Migration] ${oldUsername} -> ${newUsername}`);
-
-    // ---------------- Create new user ----------------
-
-    const newUser = {
-        ...user,
-        userId: newUsername,
-        displayName: newUsername,
-        usernameChanged: true
-    };
-
-    await db.set(`user:${newUsername.toLowerCase()}`, newUser);
-
-    // ---------------- Bets ----------------
-
-    const bets = await getBets();
-
-    let migratedBets = 0;
-
-    for (const bet of bets) {
-
-        if (bet.user === oldUsername) {
-            bet.user = newUsername;
-            migratedBets++;
-        }
-
+    if (await db.get(lockKey)) {
+        throw new Error("Username migration already in progress. Please wait.");
     }
 
-    await updateBets(bets);
+    await db.set(lockKey, {
+        startedAt: Date.now()
+    });
 
-    // ---------------- Messages ----------------
+    try {
 
-    const messages = await getMessages();
+        const user = await getUserById(oldUsername);
 
-    let migratedMessages = 0;
+        if (!user)
+            throw new Error(`User ${oldUsername} not found`);
 
-    for (const msg of messages) {
+        if (await getUserById(newUsername))
+            throw new Error(`Username ${newUsername} already exists`);
 
-        if (msg.name === oldUsername) {
-            msg.name = newUsername;
-            migratedMessages++;
-        }
+        console.log(`[Migration] ${oldUsername} -> ${newUsername}`);
 
-    }
+        // ---------- Create new user ----------
 
-    await db.set("messages", messages);
+        const newUser = {
+            ...user,
+            userId: newUsername,
+            displayName: newUsername,
+            usernameChanged: true
+        };
 
-    // ---------------- Settlement Logs ----------------
+        await db.set(`user:${newUsername.toLowerCase()}`, newUser);
 
-    const logKeys = await db.list("settlementLog:");
+        // ---------- Bets ----------
 
-    let migratedLogs = 0;
+        const bets = await getBets();
 
-    for (const key of logKeys) {
+        let migratedBets = 0;
 
-        const log = await db.get(key);
+        for (const bet of bets) {
 
-        if (!log)
-            continue;
-
-        let changed = false;
-
-        for (const entry of log.entries) {
-
-            if (entry.user === oldUsername) {
-
-                entry.user = newUsername;
-                migratedLogs++;
-                changed = true;
-
+            if ((bet.user || "").toLowerCase() === oldUsername.toLowerCase()) {
+                bet.user = newUsername;
+                migratedBets++;
             }
 
         }
 
-        if (changed)
-            await db.set(key, log);
+        await updateBets(bets);
+
+        // ---------- Messages ----------
+
+        const messages = await getMessages();
+
+        let migratedMessages = 0;
+
+        for (const msg of messages) {
+
+            if ((msg.name || "").toLowerCase() === oldUsername.toLowerCase()) {
+                msg.name = newUsername;
+                migratedMessages++;
+            }
+
+        }
+
+        await db.set("messages", messages);
+
+        // ---------- Settlement Logs ----------
+
+        const logKeys = await db.list("settlementLog:");
+
+        let migratedLogs = 0;
+
+        for (const key of logKeys) {
+
+            const log = await db.get(key);
+
+            if (!log || !log.entries)
+                continue;
+
+            let changed = false;
+
+            for (const entry of log.entries) {
+
+                if ((entry.user || "").toLowerCase() === oldUsername.toLowerCase()) {
+
+                    entry.user = newUsername;
+                    migratedLogs++;
+                    changed = true;
+
+                }
+
+            }
+
+            if (changed)
+                await db.set(key, log);
+
+        }
+
+        // ---------- Verification ----------
+
+        const remainingBets = (await getBets())
+            .filter(b => (b.user || "").toLowerCase() === oldUsername.toLowerCase());
+
+        if (remainingBets.length > 0)
+            throw new Error(`Migration verification failed. ${remainingBets.length} bets still reference ${oldUsername}.`);
+
+        let remainingLogs = 0;
+
+        for (const key of logKeys) {
+
+            const log = await db.get(key);
+
+            if (!log || !log.entries)
+                continue;
+
+            remainingLogs += log.entries.filter(
+                e => (e.user || "").toLowerCase() === oldUsername.toLowerCase()
+            ).length;
+
+        }
+
+        if (remainingLogs > 0)
+            throw new Error(`Migration verification failed. ${remainingLogs} settlement entries still reference ${oldUsername}.`);
+
+        // ---------- Email Mapping ----------
+
+        await db.set(
+            `email:${user.email.toLowerCase()}`,
+            newUsername
+        );
+
+        // ---------- Delete Old User ----------
+
+        await db.delete(`user:${oldUsername.toLowerCase()}`);
+
+        console.log(`[Migration Complete] ${oldUsername} -> ${newUsername}`);
+
+        return {
+            migratedBets,
+            migratedMessages,
+            migratedLogs
+        };
+
+    } finally {
+
+        await db.delete(lockKey);
 
     }
-
-    // ---------------- Email Mapping ----------------
-
-    await db.set(
-        `email:${user.email.toLowerCase()}`,
-        newUsername
-    );
-
-    // ---------------- Delete old user ----------------
-
-    await db.delete(`user:${oldUsername.toLowerCase()}`);
-
-    return {
-        migratedBets,
-        migratedMessages,
-        migratedLogs
-    };
 
 }
 
