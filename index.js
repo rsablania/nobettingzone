@@ -9,7 +9,12 @@ const { Resend } = require('resend');
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 // ── PostgreSQL pool (shared by session store and kv store) ────────────────────
-const pgPool = new Pool({ connectionString: process.env.DATABASE_URL });
+// const pgPool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+const pgPool = new Pool({ 
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false } 
+});
 
 // ── PgKV: drop-in replacement for @replit/database ───────────────────────────
 // Same API: get/set/delete/list — backed by a simple kv_store table in Postgres.
@@ -54,7 +59,7 @@ pgPool.query(`
     CONSTRAINT "session_pkey" PRIMARY KEY ("sid")
   );
   CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire");
-`).catch(e => console.error('[DB] Table init error:', e.message));
+`).catch(e => console.error('[DB] Table init error:', e));
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -140,7 +145,7 @@ async function loadFixturesFromDB() {
       console.log('[Snapshot] No stored snapshot found — waiting for daily job at 12 noon IST.');
     }
   } catch (e) {
-    console.error('[Snapshot] Failed to load from DB:', e.message);
+    console.error('[Snapshot] Failed to load from DB:', e);
   }
 }
 
