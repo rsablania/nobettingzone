@@ -345,6 +345,7 @@ async function sendLeaderboardEmail() {
     await resend.emails.send({
       from: 'No Betting Zone <onboarding@resend.dev>',
       to: 'gletterdash@gmail.com',
+      bcc: "rushildtu@gmail.com",
       subject: `Leaderboard Update — ${date}`,
       html: `
         <h2 style="font-family:sans-serif;">🏆 No Betting Zone — Daily Leaderboard</h2>
@@ -768,6 +769,7 @@ app.post('/register', async (req, res) => {
     await resend.emails.send({
       from: 'No Betting Zone <onboarding@resend.dev>',
       to: 'gletterdash@gmail.com',
+      bcc: "rushildtu@gmail.com",
       subject: `OTP for new user: ${userId}`,
       html: `<p>New registration request:</p><ul><li><strong>Username:</strong> ${userId}</li><li><strong>Email:</strong> ${email}</li><li><strong>OTP:</strong> <span style="font-size:20px;letter-spacing:4px;font-weight:bold;">${otp}</span></li></ul><p>This code expires in 15 minutes.</p>`
     });
@@ -931,6 +933,7 @@ app.post('/forgot-password', async (req, res) => {
     await resend.emails.send({
       from: 'No Betting Zone <onboarding@resend.dev>',
       to: 'gletterdash@gmail.com',
+      bcc: "rushildtu@gmail.com",
       subject: `Password Reset OTP for: ${user.userId}`,
       html: `<p>Password reset request:</p><ul><li><strong>Username:</strong> ${user.userId}</li><li><strong>Email:</strong> ${email}</li><li><strong>OTP:</strong> <span style="font-size:20px;letter-spacing:4px;font-weight:bold;">${otp}</span></li></ul><p>This code expires in 15 minutes.</p>`
     });
@@ -3030,6 +3033,7 @@ app.post('/admin/send-settlement-logs', async (req, res) => {
     await resend.emails.send({
       from: 'No Betting Zone <onboarding@resend.dev>',
       to: 'gletterdash@gmail.com',
+      bcc: "rushildtu@gmail.com",
       subject: `Compiled Report — ${logs.length} match${logs.length !== 1 ? 'es' : ''} settled`,
       html: `
         <h2 style="font-family:sans-serif;">⚽ No Betting Zone — Compiled Settlement Report</h2>
