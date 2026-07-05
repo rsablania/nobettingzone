@@ -159,12 +159,9 @@ async function getCachedData() {
 
 // THE MASTER REFRESHER
 async function refreshGlobalCache() {
-  console.log("[Cache] Refreshing data from DB...");
+  console.log("[Cache] Refreshing fixtures and logs only...");
 
-  // 1. Fetch bets
-  const bets = await db.get('bets') || [];
-
-  // 2. Fetch logs (Ensure the prefix matches exactly what you use in settlement)
+  // 1. Fetch logs (Historical Results)
   const logKeys = await db.list('settlementLog:');
   const logs = [];
   for (const k of logKeys) {
@@ -172,7 +169,7 @@ async function refreshGlobalCache() {
     if (data) logs.push(data);
   }
 
-  // 3. Fetch users (Check if your keys are stored as 'user:username')
+  // 2. Fetch users
   const userKeys = await db.list('user:');
   const users = [];
   for (const k of userKeys) {
@@ -180,8 +177,7 @@ async function refreshGlobalCache() {
     if (data) users.push(data);
   }
 
-  // 4. Populate memoryCache
-  memoryCache.bets = bets;
+  // 3. Populate memoryCache (Note: 'bets' is removed here)
   memoryCache.logs = logs.sort((a, b) => 
     moment(b.settledAt, 'DD MMM YYYY, HH:mm z').valueOf() - 
     moment(a.settledAt, 'DD MMM YYYY, HH:mm z').valueOf()
@@ -189,7 +185,6 @@ async function refreshGlobalCache() {
   memoryCache.users = users.sort((a, b) => b.totalNetPoints - a.totalNetPoints);
   memoryCache.lastUpdated = Date.now();
   
-  console.log(`[Cache] Found ${logs.length} logs and ${users.length} users.`);
   return memoryCache;
 }
 
@@ -533,12 +528,8 @@ async function addBet(bet) {
 
 // OPTIMIZED: Get Bets
 async function getBets() {
-  if (memoryCache.bets) return memoryCache.bets; // Read from RAM (0ms)
-  
-  // Note: Adjust 'bets' if your DB key is slightly different (e.g., 'allBets')
-  const bets = await db.get('bets') || []; 
-  memoryCache.bets = bets; // Save to RAM for next time
-  return bets;
+  // Always fetch directly from DB to ensure real-time data
+  return await db.get('bets') || [];
 }
 
 // OPTIMIZED: Get Settlement Logs (Historical Results)
@@ -1674,77 +1665,85 @@ app.get('/match', requireAuth, async (req, res) => {
   }
 });
 
-// HANDLE BET – tranche-based, up to MAX_STAKE_PER_FIXTURE pts per user per fixture
+
+
 app.post('/bet', requireAuth, async (req, res) => {
   const { eventId, selection, leagueName } = req.body || {};
   if (!eventId || !selection) {
     return res.status(400).send('Missing fields');
   }
 
-  const user = await getUserById(req.session.userId);
-  if (!user) return res.redirect('/login');
-  const event = await getEventById(eventId);
-  if (!event) return res.status(400).send('Match not found');
+  try {
+    const user = await getUserById(req.session.userId);
+    if (!user) return res.redirect('/login');
+    const event = await getEventById(eventId);
+    if (!event) return res.status(400).send('Match not found');
 
-  // Betting closes 10 minutes before kick-off
-  const kickoff = new Date(event.commence_time);
-  const tenMinsBefore = new Date(kickoff.getTime() - 10 * 60 * 1000);
-  if (new Date() >= tenMinsBefore) {
-    const timeStr = moment(kickoff).tz(TIMEZONE).format('DD MMM, HH:mm');
-    return res.send(`Betting closed — predictions locked 10 minutes before kick-off (${timeStr} IST).`);
-  }
+    // Betting closes 10 minutes before kick-off
+    const kickoff = new Date(event.commence_time);
+    const tenMinsBefore = new Date(kickoff.getTime() - 10 * 60 * 1000);
+    if (new Date() >= tenMinsBefore) {
+      const timeStr = moment(kickoff).tz(TIMEZONE).format('DD MMM, HH:mm');
+      return res.send(`Betting closed — predictions locked 10 minutes before kick-off (${timeStr} IST).`);
+    }
 
-  // Validate stake
-  const stakeInput = parseInt(req.body.stake);
-  if (!STAKE_OPTIONS.includes(stakeInput)) {
-    return res.status(400).send('Invalid stake amount.');
-  }
-  const stake = stakeInput;
+    // Validate stake
+    const stakeInput = parseInt(req.body.stake);
+    if (!STAKE_OPTIONS.includes(stakeInput)) {
+      return res.status(400).send('Invalid stake amount.');
+    }
+    const stake = stakeInput;
 
-  // Enforce max stake cap per fixture
-  const bets = await getBets();
-  const existingTranches = bets.filter(b => b.user === user.userId && b.fixtureId === eventId);
-  const alreadyStaked = existingTranches.reduce((s, b) => s + b.stake, 0);
-  if (alreadyStaked + stake > MAX_STAKE_PER_FIXTURE) {
-    return res.status(400).send(`Only ${MAX_STAKE_PER_FIXTURE - alreadyStaked} pts remaining for this match.`);
-  }
+    // Enforce max stake cap per fixture
+    const bets = await getBets();
+    const existingTranches = bets.filter(b => b.user === user.userId && b.fixtureId === eventId);
+    const alreadyStaked = existingTranches.reduce((s, b) => s + b.stake, 0);
+    
+    // FIX: Use MAX_STAKE_PER_FIXTURE here
+    if (alreadyStaked + stake > MAX_STAKE_PER_FIXTURE) {
+      return res.status(400).send(`Only ${MAX_STAKE_PER_FIXTURE - alreadyStaked} pts remaining for this match.`);
+    }
 
-  // Lock in odds from the current snapshot at time of this tranche
-  const odds = extractOdds(event);
-  let lockedOdds = 2.0;
-  if (odds) {
-    const match = odds.find(o => o.value === selection);
-    if (match) lockedOdds = parseFloat(match.odd) || 2.0;
-  }
+    // Lock in odds
+    const odds = extractOdds(event);
+    let lockedOdds = 2.0;
+    if (odds) {
+      const match = odds.find(o => o.value === selection);
+      if (match) lockedOdds = parseFloat(match.odd) || 2.0;
+    }
 
-  const isFirstTranche = existingTranches.length === 0;
-  const bet = {
-    id: Date.now().toString(),
-    user: user.userId,
-    fixtureId: eventId,
-    sportKey: event.sport_key,
-    homeTeam: event.home_team,
-    awayTeam: event.away_team,
-    leagueName: leagueName || event.sport_title || 'Unknown League',
-    commenceTime: event.commence_time || '',
-    market: 'MATCH_RESULT',
-    selection,
-    stake,
-    lockedOdds,
-    status: 'PENDING',
-    netPoints: null,
-    result: null,
-  };
-  await addBet(bet);
+    const isFirstTranche = existingTranches.length === 0;
+    const bet = {
+      id: Date.now().toString(),
+      user: user.userId,
+      fixtureId: eventId,
+      sportKey: event.sport_key,
+      homeTeam: event.home_team,
+      awayTeam: event.away_team,
+      leagueName: leagueName || event.sport_title || 'Unknown League',
+      commenceTime: event.commence_time || '',
+      market: 'MATCH_RESULT',
+      selection,
+      stake,
+      lockedOdds,
+      status: 'PENDING',
+      netPoints: null,
+      result: null,
+    };
 
-  const totalNow = alreadyStaked + stake;
-  const remaining = 100 - totalNow;
+    // FIX: Await the database write
+    await addBet(bet);
 
-  const selectionLabel = selection === 'Home' ? `${event.home_team} wins`
-    : selection === 'Away' ? `${event.away_team} wins`
-    : 'Draw';
+    // FIX: Calculate remaining based on the MAX_STAKE_PER_FIXTURE constant
+    const totalNow = alreadyStaked + stake;
+    const remaining = MAX_STAKE_PER_FIXTURE - totalNow;
 
-  res.send(`
+    const selectionLabel = selection === 'Home' ? `${event.home_team} wins`
+      : selection === 'Away' ? `${event.away_team} wins`
+      : 'Draw';
+
+    // ... (rest of your res.send HTML) ...
+    res.send(`
     <html><body style="background:#020617;color:#e5e7eb;font-family:system-ui;padding:20px;">
       <div style="max-width:400px;margin:0 auto;text-align:center;padding-top:40px;">
         <div style="font-size:48px;margin-bottom:12px;">${isFirstTranche ? '✅' : '➕'}</div>
@@ -1776,24 +1775,23 @@ app.post('/bet', requireAuth, async (req, res) => {
       </div>
     </body></html>
   `);
+
+  } catch (err) {
+    console.error("[Bet Error]:", err);
+    res.status(500).send("Failed to register bet. Please try again.");
+  }
 });
 
 // MY PREDICTIONS SUMMARY PAGE
 app.get('/summary', requireAuth, async (req, res) => {
-  const start = Date.now();
-  
   const user = await getUserById(req.session.userId);
   if (!user) return res.redirect('/login');
 
-  // Destructure BOTH bets and lastUpdated from the returned cache object
-  const { bets: allBets, lastUpdated } = await getCachedData();
+  // Fetch only non-bet data from cache, fetch bets fresh
+  const { lastUpdated } = await getCachedData(); 
+  const allBets = await getBets(); // Always real-time
   
   const bets = allBets.filter(b => b.user === user.userId);
-
-  const end = Date.now();
-  
-  // Now 'lastUpdated' is defined in this scope
-  console.log(`[Perf] /summary loaded in ${end - start}ms (Cache age: ${Math.round((end - lastUpdated)/1000)}s)`);
   
   // 3. Pre-calculate stats (Only runs once per load)
   const total = bets.length;
