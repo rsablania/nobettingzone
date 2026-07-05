@@ -747,7 +747,7 @@ async function settlePendingBets() {
 
     }
 
-}
+}}
 
 // Settlement is triggered exclusively by the daily job at 12 noon IST.
 // No auto-polling — every API call is accounted for.
