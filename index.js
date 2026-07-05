@@ -551,89 +551,202 @@ async function settlePendingBets() {
   }
 
   let changed = false;
-  for (const { result, bets } of Object.values(byFixture)) {
-    const totalStaked = bets.reduce((a, b) => a + b.stake, 0);
+  for (const [fixtureId, fixtureData] of Object.entries(byFixture)) {
 
-    // ── Step 1: tranche-level pari-mutuel, each winning tranche capped at its own gross ──
-    const sumGross = bets.reduce((s, b) =>
-      b.selection === result ? s + b.stake * parseFloat(b.lockedOdds) : s, 0);
+    try {
 
-    let totalWinnerPayout = 0;
-    const tranchePayout = bets.map(b => {
-      if (b.selection !== result) return 0;
-      const gross = b.stake * parseFloat(b.lockedOdds);
-      const payout = Math.round(Math.min(sumGross > 0 ? (gross / sumGross) * totalStaked : 0, gross) * 10) / 10;
-      totalWinnerPayout += payout;
-      return payout;
-    });
+        // Prevent double settlement
+        const existingLog = await db.get(`settlementLog:${fixtureId}`);
 
-    // ── Step 2: undistributed pool → losers proportionally by stake ──────────
-    const undistributed = Math.round((totalStaked - totalWinnerPayout) * 10) / 10;
-    const totalLoserStake = bets.reduce((s, b) => b.selection !== result ? s + b.stake : s, 0);
-    for (let i = 0; i < bets.length; i++) {
-      if (bets[i].selection !== result) {
-        tranchePayout[i] = totalLoserStake > 0
-          ? Math.round(undistributed * (bets[i].stake / totalLoserStake) * 10) / 10 : 0;
-      }
-    }
-
-    // ── Step 3: set status and netPoints per tranche ──────────────────────────
-    for (let i = 0; i < bets.length; i++) {
-      bets[i].status = bets[i].selection === result ? 'WON' : 'LOST';
-      bets[i].result = result;
-      bets[i].netPoints = Math.round((tranchePayout[i] - bets[i].stake) * 10) / 10;
-    }
-
-    // ── Step 4: accumulate net per user then update balances ─────────────────
-    const userNetMap = {};
-    for (const bet of bets) {
-      userNetMap[bet.user] = Math.round(((userNetMap[bet.user] || 0) + bet.netPoints) * 10) / 10;
-    }
-    for (const [userId, netPts] of Object.entries(userNetMap)) {
-      try {
-        const userRec = await getUserById(userId.toLowerCase());
-        if (userRec) {
-          userRec.totalNetPoints = Math.round((userRec.totalNetPoints + netPts) * 10) / 10;
-          await saveUser(userRec);
+        if (existingLog) {
+            console.log(`[Settlement] ${fixtureId} already settled`);
+            continue;
         }
-      } catch (e) {
-        summary.errors.push(`User update error for ${userId}: ${e.message}`);
-      }
+
+        const { result, bets } = fixtureData;
+
+        const totalStaked = bets.reduce(
+            (sum, b) => sum + b.stake,
+            0
+        );
+
+        // ---- Step 1 ----
+
+        const sumGross = bets.reduce(
+            (sum, b) =>
+                b.selection === result
+                    ? sum + b.stake * Number(b.lockedOdds)
+                    : sum,
+            0
+        );
+
+        let totalWinnerPayout = 0;
+
+        const tranchePayout = bets.map(b => {
+
+            if (b.selection !== result)
+                return 0;
+
+            const gross =
+                b.stake * Number(b.lockedOdds);
+
+            const payout = Math.min(
+                sumGross > 0
+                    ? (gross / sumGross) * totalStaked
+                    : 0,
+                gross
+            );
+
+            totalWinnerPayout += payout;
+
+            return Math.round(payout * 10) / 10;
+
+        });
+
+        // ---- Step 2 ----
+
+        const undistributed =
+            Math.round(
+                (totalStaked - totalWinnerPayout) * 10
+            ) / 10;
+
+        const totalLoserStake = bets.reduce(
+            (sum, b) =>
+                b.selection !== result
+                    ? sum + b.stake
+                    : sum,
+            0
+        );
+
+        for (let i = 0; i < bets.length; i++) {
+
+            if (bets[i].selection === result)
+                continue;
+
+            tranchePayout[i] =
+                totalLoserStake > 0
+                    ? Math.round(
+                        undistributed *
+                        (bets[i].stake / totalLoserStake) *
+                        10
+                    ) / 10
+                    : 0;
+
+        }
+
+        // ---- Step 3 ----
+
+        for (let i = 0; i < bets.length; i++) {
+
+            bets[i].status =
+                bets[i].selection === result
+                    ? "WON"
+                    : "LOST";
+
+            bets[i].result = result;
+
+            bets[i].netPoints =
+                Math.round(
+                    (tranchePayout[i] - bets[i].stake) * 10
+                ) / 10;
+
+        }
+
+        // ---- Step 4 ----
+
+        const userNetMap = {};
+
+        for (const bet of bets) {
+
+            userNetMap[bet.user] =
+                Math.round(
+                    ((userNetMap[bet.user] || 0) + bet.netPoints) * 10
+                ) / 10;
+
+        }
+
+        // ---- Step 5 ----
+        // Save settlement log BEFORE updating users
+
+        const firstBet = bets[0];
+
+        await db.set(`settlementLog:${fixtureId}`, {
+
+            fixtureId,
+
+            homeTeam: firstBet.homeTeam,
+
+            awayTeam: firstBet.awayTeam,
+
+            leagueName: firstBet.leagueName,
+
+            result,
+
+            totalStaked,
+
+            settledAt: moment()
+                .tz(TIMEZONE)
+                .format("DD MMM YYYY, HH:mm z"),
+
+            entries: bets.map((bet, i) => ({
+
+                user: bet.user,
+
+                selection: bet.selection,
+
+                stake: bet.stake,
+
+                lockedOdds: bet.lockedOdds,
+
+                status: bet.status,
+
+                finalPayout: tranchePayout[i],
+
+                netPoints: bet.netPoints
+
+            }))
+
+        });
+
+        // ---- Step 6 ----
+
+        for (const [userId, netPoints] of Object.entries(userNetMap)) {
+
+            const user = await getUserById(userId);
+
+            if (!user)
+                continue;
+
+            user.totalNetPoints =
+                Math.round(
+                    (user.totalNetPoints + netPoints) * 10
+                ) / 10;
+
+            await saveUser(user);
+
+        }
+
+        summary.settled += bets.length;
+        summary.settledFixtureIds.push(fixtureId);
+
+        changed = true;
+
+        console.log(
+            `[Settlement] ${fixtureId} settled (${bets.length} bets)`
+        );
+
+    }
+    catch (err) {
+
+        console.error(
+            `[Settlement] ${fixtureId}`,
+            err
+        );
+
+        summary.errors.push(err.message);
+
     }
 
-    // ── Step 5: build settlement log ─────────────────────────────────────────
-    const logEntries = [];
-    for (let i = 0; i < bets.length; i++) {
-      logEntries.push({
-        user: bets[i].user,
-        selection: bets[i].selection,
-        stake: bets[i].stake,
-        lockedOdds: bets[i].lockedOdds,
-        status: bets[i].status,
-        finalPayout: tranchePayout[i],
-        netPoints: bets[i].netPoints,
-      });
-      summary.settled++;
-    }
-    changed = true;
-
-    // Persist settlement log for this fixture
-    const fb = bets[0];
-    await db.set(`settlementLog:${fb.fixtureId}`, {
-      fixtureId: fb.fixtureId,
-      homeTeam: fb.homeTeam || '?',
-      awayTeam: fb.awayTeam || '?',
-      leagueName: fb.leagueName || 'Unknown',
-      result,
-      totalStaked,
-      settledAt: moment().tz(TIMEZONE).format('DD MMM YYYY, HH:mm z'),
-      entries: logEntries,
-    });
-    summary.settledFixtureIds.push(fb.fixtureId);
-  }
-
-  if (changed) await updateBets(allBets);
-  return summary;
 }
 
 // Settlement is triggered exclusively by the daily job at 12 noon IST.
