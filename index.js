@@ -135,11 +135,52 @@ const SOCCER_SPORT_KEYS = [
 let fixtureSnapshot = [];   // array of Odds API event objects
 let snapshotMeta = null;    // { fetchedAt, creditsLeft }
 
-// NEW: Global RAM Cache
 const memoryCache = {
   messages: null,
-  bets: null
+  bets: null,
+  logs: null,
+  users: null,
+  lastUpdated: 0 
 };
+
+const CACHE_DURATION = 2 * 60 * 60 * 1000; // 2 hours
+
+// THE MASTER REFRESHER
+async function refreshGlobalCache() {
+  const [msgs, bets, logs, users] = await Promise.all([
+    db.get('messages') || [],
+    db.get('bets') || [],
+    (async () => {
+        const keys = await db.list('settlementLog:');
+        const l = [];
+        for (const k of keys) { const d = await db.get(k); if (d) l.push(d); }
+        return l.sort((a, b) => moment(b.settledAt, 'DD MMM YYYY, HH:mm z').valueOf() - moment(a.settledAt, 'DD MMM YYYY, HH:mm z').valueOf());
+    })(),
+    (async () => {
+        const keys = await db.list('user:');
+        const u = [];
+        for (const k of keys) { const d = await db.get(k); if (d) u.push(d); }
+        return u.sort((a, b) => b.totalNetPoints - a.totalNetPoints);
+    })()
+  ]);
+
+  memoryCache.messages = msgs;
+  memoryCache.bets = bets;
+  memoryCache.logs = logs;
+  memoryCache.users = users;
+  memoryCache.lastUpdated = Date.now();
+  
+  return { msgs, bets, logs, users };
+}
+
+// THE ACCESSOR (Use this in your routes)
+async function getCachedData() {
+  const now = Date.now();
+  if (memoryCache.messages && (now - memoryCache.lastUpdated < CACHE_DURATION)) {
+    return memoryCache;
+  }
+  return await refreshGlobalCache();
+}
 
 // Load the persisted snapshot from Replit DB into memory on startup
 async function loadFixturesFromDB() {
@@ -487,6 +528,28 @@ async function getBets() {
   const bets = await db.get('bets') || []; 
   memoryCache.bets = bets; // Save to RAM for next time
   return bets;
+}
+
+// OPTIMIZED: Get Settlement Logs (Historical Results)
+async function getSettlementLogs() {
+  // 1. If we already have them in RAM, return them instantly (0ms)
+  if (memoryCache.logs) return memoryCache.logs;
+
+  // 2. Otherwise, fetch them from the database (only happens once!)
+  const logKeys = await db.list('settlementLog:');
+  const allLogs = [];
+  
+  for (const key of logKeys) {
+    const logData = await db.get(key);
+    if (logData) allLogs.push(logData);
+  }
+
+  // Optional: Sort them so the newest dates are at the top
+  allLogs.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  // 3. Save to RAM for the next person
+  memoryCache.logs = allLogs;
+  return allLogs;
 }
 
 async function addMessage(msg) {
@@ -1660,7 +1723,8 @@ app.post('/bet', requireAuth, async (req, res) => {
 app.get('/summary', requireAuth, async (req, res) => {
   const user = await getUserById(req.session.userId);
   if (!user) return res.redirect('/login');
-  const bets = (await getBets()).filter(b => b.user === user.userId);
+  const { bets } = await getCachedData();
+  // const bets = (await getBets()).filter(b => b.user === user.userId);
 
   const total = bets.length;
   const won = bets.filter(b => b.status === 'WON').length;
@@ -1885,26 +1949,12 @@ app.get('/rules', requireAuth, (req, res) => {
 });
 
 // RESULTS – leaderboard + all settled matches inline
+// RESULTS – leaderboard + all settled matches inline
 app.get('/results', requireAuth, async (req, res) => {
-  const [settlementKeys, userKeys] = await Promise.all([
-    db.list('settlementLog:'),
-    db.list('user:'),
-  ]);
+  // 1. Get cached data (Results and Leaderboard are pre-calculated)
+  const { logs, users } = await getCachedData();
 
-  const logs = [];
-  for (const key of settlementKeys) {
-    const log = await db.get(key);
-    if (log) logs.push(log);
-  }
-  logs.sort((a, b) => moment(b.settledAt, 'DD MMM YYYY, HH:mm z').valueOf() - moment(a.settledAt, 'DD MMM YYYY, HH:mm z').valueOf()); // newest first
-
-  const users = [];
-  for (const key of userKeys) {
-    const u = await db.get(key);
-    if (u) users.push(u);
-  }
-  users.sort((a, b) => b.totalNetPoints - a.totalNetPoints);
-
+  // 2. Prepare metadata
   const lastUpdated = logs.length ? logs[0].settledAt : null;
   const nextNoon = (() => {
     const n = moment().tz(TIMEZONE);
@@ -1913,6 +1963,7 @@ app.get('/results', requireAuth, async (req, res) => {
   })();
   const nextUpdateStr = nextNoon.format('D MMM YYYY, h:mm A z');
 
+  // 3. Build HTML
   let html = htmlHeader('Results - No Betting Zone');
   html += `<h2>Results</h2>`;
   html += `<p style="font-size:11px;color:#6b7280;margin-top:-4px;margin-bottom:6px;">
