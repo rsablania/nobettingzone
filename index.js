@@ -1832,10 +1832,32 @@ app.get('/match', requireAuth, async (req, res) => {
               overlay.style.display = 'none';
             });
             document.getElementById('bet-confirm-btn').addEventListener('click', function() {
-              confirmed = true;
-              overlay.style.display = 'none';
-              form.submit();
-            });
+
+    if (confirmed) return;
+
+    confirmed = true;
+
+    const btn = this;
+
+    btn.disabled = true;
+    btn.textContent = "Placing Bet...";
+    btn.style.opacity = "0.6";
+    btn.style.cursor = "not-allowed";
+
+    overlay.style.display = "none";
+
+    // Disable the original submit button too
+    const submitBtn = form.querySelector('button[type="submit"]');
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = "Placing Bet...";
+        submitBtn.style.opacity = "0.6";
+        submitBtn.style.cursor = "not-allowed";
+    }
+
+    form.submit();
+
+});
           })();
         </script>
       `;
