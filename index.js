@@ -145,41 +145,52 @@ const memoryCache = {
 
 const CACHE_DURATION = 2 * 60 * 60 * 1000; // 2 hours
 
-// THE MASTER REFRESHER
-async function refreshGlobalCache() {
-  const [msgs, bets, logs, users] = await Promise.all([
-    db.get('messages') || [],
-    db.get('bets') || [],
-    (async () => {
-        const keys = await db.list('settlementLog:');
-        const l = [];
-        for (const k of keys) { const d = await db.get(k); if (d) l.push(d); }
-        return l.sort((a, b) => moment(b.settledAt, 'DD MMM YYYY, HH:mm z').valueOf() - moment(a.settledAt, 'DD MMM YYYY, HH:mm z').valueOf());
-    })(),
-    (async () => {
-        const keys = await db.list('user:');
-        const u = [];
-        for (const k of keys) { const d = await db.get(k); if (d) u.push(d); }
-        return u.sort((a, b) => b.totalNetPoints - a.totalNetPoints);
-    })()
-  ]);
-
-  memoryCache.messages = msgs;
-  memoryCache.bets = bets;
-  memoryCache.logs = logs;
-  memoryCache.users = users;
-  memoryCache.lastUpdated = Date.now();
-  
-  return { msgs, bets, logs, users };
-}
-
-// THE ACCESSOR (Use this in your routes)
 async function getCachedData() {
   const now = Date.now();
-  if (memoryCache.messages && (now - memoryCache.lastUpdated < CACHE_DURATION)) {
+  
+  // If cache is fresh (less than 5 mins old), return it immediately
+  if (memoryCache.lastUpdated > 0 && (now - memoryCache.lastUpdated < CACHE_DURATION)) {
     return memoryCache;
   }
+
+  // Otherwise, refresh the cache
   return await refreshGlobalCache();
+}
+
+// THE MASTER REFRESHER
+async function refreshGlobalCache() {
+  console.log("[Cache] Refreshing data from DB...");
+
+  // 1. Fetch bets
+  const bets = await db.get('bets') || [];
+
+  // 2. Fetch logs (Ensure the prefix matches exactly what you use in settlement)
+  const logKeys = await db.list('settlementLog:');
+  const logs = [];
+  for (const k of logKeys) {
+    const data = await db.get(k);
+    if (data) logs.push(data);
+  }
+
+  // 3. Fetch users (Check if your keys are stored as 'user:username')
+  const userKeys = await db.list('user:');
+  const users = [];
+  for (const k of userKeys) {
+    const data = await db.get(k);
+    if (data) users.push(data);
+  }
+
+  // 4. Populate memoryCache
+  memoryCache.bets = bets;
+  memoryCache.logs = logs.sort((a, b) => 
+    moment(b.settledAt, 'DD MMM YYYY, HH:mm z').valueOf() - 
+    moment(a.settledAt, 'DD MMM YYYY, HH:mm z').valueOf()
+  );
+  memoryCache.users = users.sort((a, b) => b.totalNetPoints - a.totalNetPoints);
+  memoryCache.lastUpdated = Date.now();
+  
+  console.log(`[Cache] Found ${logs.length} logs and ${users.length} users.`);
+  return memoryCache;
 }
 
 // Load the persisted snapshot from Replit DB into memory on startup
@@ -704,17 +715,51 @@ function htmlHeader(title) {
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${title}</title>
     <style>
-      body { background:#020617; color:#e5e7eb; font-family: system-ui, -apple-system, BlinkMacSystemFont; margin:0; }
-      a { color:#22c55e; text-decoration:none; }
-      .container { padding:16px; padding-bottom:72px; }
-      .card { background:#020617; border:1px solid #1f2937; border-radius:12px; padding:12px; margin-bottom:8px; }
-      .title { font-size:20px; font-weight:bold; margin-bottom:8px; }
-      .nav { position:fixed; bottom:0; left:0; right:0; height:56px; background:#020617; border-top:1px solid #1f2937; display:flex; justify-content:space-around; align-items:center; font-size:12px; }
-      .nav a { color:#9ca3af; }
-      .nav a.active { color:#22c55e; font-weight:bold; }
-      input, textarea, button { font-size:16px; }
-      input, textarea { padding:8px; border-radius:8px; border:1px solid #1f2937; background:#020617; color:#e5e7eb; }
-      button { background:#22c55e; color:#020617; border:none; border-radius:8px; padding:8px 12px; font-weight:bold; }
+      :root {
+        --bg: #020617;
+        --card-bg: #0f172a;
+        --accent: #22c55e;
+        --text: #f1f5f9;
+        --muted: #94a3b8;
+      }
+      body { 
+        background: var(--bg); 
+        color: var(--text); 
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; 
+        margin:0; 
+      }
+      a { color: var(--accent); text-decoration:none; }
+      .container { padding:20px; padding-bottom:80px; max-width: 500px; margin: 0 auto; }
+      
+      .card { 
+        background: var(--card-bg); 
+        border: 1px solid rgba(255,255,255,0.05); 
+        border-radius: 16px; 
+        padding: 16px; 
+        margin-bottom: 12px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      }
+      
+      h2, h3 { color: #fff; letter-spacing: -0.5px; }
+      
+      .nav { 
+        position:fixed; bottom:0; left:0; right:0; height:64px; 
+        background: rgba(15, 23, 42, 0.9); backdrop-filter: blur(10px);
+        border-top: 1px solid rgba(255,255,255,0.1); 
+        display:flex; justify-content:space-around; align-items:center; 
+      }
+      
+      button { 
+        background: var(--accent); color: #020617; border:none; 
+        border-radius: 12px; padding: 12px 20px; font-weight:700; 
+        cursor: pointer; width: 100%; transition: transform 0.1s;
+      }
+      button:active { transform: scale(0.98); }
+      
+      input, textarea { 
+        width: 100%; padding: 12px; border-radius: 10px; 
+        border: 1px solid #1e293b; background: #020617; color: #fff;
+      }
     </style>
   </head>
   <body>
@@ -1271,7 +1316,7 @@ app.get('/', requireAuth, async (req, res) => {
 
       for (const leagueName of leagueNames) {
         const list = byLeague[leagueName].slice(0, 15);
-        html += `<details class="tournament">
+        html += `<details class="tournament" open>
           <summary>${leagueName} <span style="font-size:12px;font-weight:400;color:#6b7280;">${list.length} match${list.length !== 1 ? 'es' : ''}</span></summary>`;
 
         for (const ev of list) {
@@ -1328,6 +1373,20 @@ app.get('/', requireAuth, async (req, res) => {
     res.status(500).send('Error: ' + e.message);
   }
 });
+
+// app.get('/debug-cache', async (req, res) => {
+//   const data = await getCachedData();
+//   res.json({
+//     betsCount: data.bets?.length,
+//     logsCount: data.logs?.length,
+//     lastUpdated: new Date(data.lastUpdated).toISOString()
+//   });
+// });
+
+// app.get('/debug-keys', async (req, res) => {
+//   const allKeys = await db.list(''); // This lists ALL keys in the DB
+//   res.json(allKeys);
+// });
 
 // USER PAGE – see own bets (session-based)
 app.get('/me', requireAuth, async (req, res) => {
@@ -1721,16 +1780,27 @@ app.post('/bet', requireAuth, async (req, res) => {
 
 // MY PREDICTIONS SUMMARY PAGE
 app.get('/summary', requireAuth, async (req, res) => {
+  const start = Date.now();
+  
   const user = await getUserById(req.session.userId);
   if (!user) return res.redirect('/login');
-  const { bets } = await getCachedData();
-  // const bets = (await getBets()).filter(b => b.user === user.userId);
 
+  // Destructure BOTH bets and lastUpdated from the returned cache object
+  const { bets: allBets, lastUpdated } = await getCachedData();
+  
+  const bets = allBets.filter(b => b.user === user.userId);
+
+  const end = Date.now();
+  
+  // Now 'lastUpdated' is defined in this scope
+  console.log(`[Perf] /summary loaded in ${end - start}ms (Cache age: ${Math.round((end - lastUpdated)/1000)}s)`);
+  
+  // 3. Pre-calculate stats (Only runs once per load)
   const total = bets.length;
   const won = bets.filter(b => b.status === 'WON').length;
   const lost = bets.filter(b => b.status === 'LOST').length;
   const pending = bets.filter(b => b.status === 'PENDING').length;
-  const winRate = total - pending > 0 ? Math.round((won / (total - pending)) * 100) : 0;
+  const winRate = (total - pending) > 0 ? Math.round((won / (total - pending)) * 100) : 0;
   const totalNet = user.totalNetPoints;
 
   let html = htmlHeader(`${user.displayName} - My Predictions`);
@@ -1882,7 +1952,6 @@ app.get('/rules', requireAuth, (req, res) => {
     <div class="card" style="margin-bottom:12px;">
       <div style="font-size:13px;font-weight:700;color:#22c55e;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">Getting Started</div>
       <ul style="margin:0;padding-left:18px;font-size:14px;line-height:1.8;color:#d1d5db;">
-        <li>Every player starts with <strong style="color:#e5e7eb;">100 points</strong>.</li>
         <li>Stake points on match outcomes to win more — or lose some if you get it wrong.</li>
         <li>The goal is to finish the tournament with the highest <strong style="color:#e5e7eb;">net points</strong>.</li>
       </ul>
@@ -2876,7 +2945,11 @@ app.post('/forum', requireAuth, async (req, res) => {
 });
 
 // START SERVER — load persisted snapshot into memory before accepting requests
-loadFixturesFromDB().then(() => {
+// START SERVER — load persisted snapshot into memory before accepting requests
+loadFixturesFromDB().then(async () => {
+  // 1. Warm up the cache immediately on startup
+  await refreshGlobalCache(); 
+  
   app.listen(PORT, () => {
     console.log(`No Betting Zone server running on port ${PORT}`);
   });
