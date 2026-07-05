@@ -966,6 +966,138 @@ app.post('/reset-password', async (req, res) => {
 
 /* ---------------- ROUTES ---------------- */
 
+// EDIT USERNAME – GET
+app.get('/edit-username', requireAuth, async (req, res) => {
+  const user = await getUserById(req.session.userId);
+  if (!user) return res.redirect('/login');
+  
+  const err = req.query.error || '';
+  let html = htmlHeader('Edit Username - No Betting Zone');
+  
+  html += `<h2>Change Username</h2>`;
+  
+  // Enforce the "Only Once" rule
+  if (user.usernameChanged) {
+    html += `
+      <div class="card" style="border-color:#f59e0b;">
+        <p style="color:#f59e0b;font-weight:bold;margin-top:0;">⚠️ Limit Reached</p>
+        <p style="font-size:14px;color:#d1d5db;">You have already changed your username once. For security and tracking purposes, usernames cannot be changed again.</p>
+      </div>
+      <p style="margin-top:16px;"><a href="/summary">← Back to My Stats</a></p>
+    `;
+  } else {
+    html += `
+      <p style="font-size:13px;color:#9ca3af;margin-bottom:16px;">You can only change your username <strong>ONCE</strong>. Choose carefully!</p>
+      ${err ? `<p style="color:#ef4444;font-size:13px;">${err}</p>` : ''}
+      
+      <form method="POST" action="/edit-username" onsubmit="return confirm('Are you sure? You will not be able to change this again.');">
+        <p style="margin-bottom:4px;font-size:13px;">New Username</p>
+        <input name="newUsername" placeholder="e.g. NewName07" required 
+          style="width:100%;margin-bottom:16px;">
+        <button type="submit" style="width:100%;background:#f59e0b;color:#000;">Change Username</button>
+      </form>
+      <p style="margin-top:16px;"><a href="/summary">← Back to My Stats</a></p>
+    `;
+  }
+  
+  html += htmlFooter('summary');
+  res.send(html);
+});
+
+// EDIT USERNAME – POST (The Migration Engine)
+// EDIT USERNAME – POST (The Migration Engine - Async)
+app.post('/edit-username', requireAuth, async (req, res) => {
+  const { newUsername } = req.body || {};
+  const oldId = req.session.userId;
+  
+  if (!newUsername) return res.redirect('/edit-username?error=Username+cannot+be+empty.');
+  if (newUsername.length < 3 || newUsername.length > 20) return res.redirect('/edit-username?error=Username+must+be+3-20+characters.');
+  if (!/^[a-zA-Z0-9_]+$/.test(newUsername)) return res.redirect('/edit-username?error=Username+can+only+contain+letters,+numbers,+and+underscores.');
+  if (newUsername.toLowerCase() === oldId.toLowerCase()) return res.redirect('/edit-username?error=That+is+already+your+username.');
+
+  try {
+    const user = await getUserById(oldId);
+    if (!user) return res.redirect('/login');
+    if (user.usernameChanged) return res.redirect('/edit-username?error=You+have+already+changed+your+username+once.');
+
+    // Check if new username is taken
+    const existing = await getUserById(newUsername);
+    if (existing) return res.redirect('/edit-username?error=Username+is+already+taken.');
+
+    // 1. Update User DB & Email Pointer (Must happen immediately)
+    const newUser = { 
+      ...user, 
+      userId: newUsername, 
+      displayName: newUsername, 
+      usernameChanged: true 
+    };
+    await db.set(`user:${newUsername.toLowerCase()}`, newUser);
+    await db.set(`email:${user.email.toLowerCase()}`, newUsername);
+    await db.delete(`user:${oldId.toLowerCase()}`);
+
+    // 2. Update active session immediately
+    req.session.userId = newUsername;
+    req.session.displayName = newUsername;
+
+    // 3. SEND RESPONSE IMMEDIATELY (Instant page reload for the user)
+    res.redirect('/summary');
+
+    // 4. FIRE AND FORGET: Background Migration Task
+    // We do NOT use 'await' here. This runs independently in the background.
+    (async () => {
+      try {
+        console.log(`[Migration Started] Migrating data for ${oldId} -> ${newUsername}`);
+        
+        // Migrate Pending & Settled Bets
+        const allBets = await getBets();
+        let betsModified = false;
+        allBets.forEach(b => {
+          if (b.user === oldId) {
+            b.user = newUsername;
+            betsModified = true;
+          }
+        });
+        if (betsModified) await updateBets(allBets);
+
+        // Migrate Forum Messages
+        const allMsgs = await getMessages();
+        let msgsModified = false;
+        allMsgs.forEach(m => {
+          if (m.name === oldId) {
+            m.name = newUsername;
+            msgsModified = true;
+          }
+        });
+        if (msgsModified) await db.set('messages', allMsgs);
+
+        // Migrate Settlement Logs (Historical Results)
+        const logKeys = await db.list('settlementLog:');
+        for (const key of logKeys) {
+          const log = await db.get(key);
+          if (!log) continue;
+          let logModified = false;
+          log.entries.forEach(e => {
+            if (e.user === oldId) {
+              e.user = newUsername;
+              logModified = true;
+            }
+          });
+          if (logModified) await db.set(key, log);
+        }
+        
+        console.log(`[Migration Complete] Data migrated successfully for ${newUsername}`);
+      } catch (bgError) {
+        console.error(`[Migration Error] Failed migrating data for ${newUsername}:`, bgError.message);
+      }
+    })();
+
+  } catch (e) {
+    console.error('[EditUsername Error]', e.message);
+    res.redirect('/edit-username?error=Something+went+wrong.+Please+try+again.');
+  }
+});
+
+
 // HOME / DASHBOARD – reads from in-memory snapshot only, no API calls
 app.get('/', requireAuth, async (req, res) => {
   try {
@@ -1518,7 +1650,10 @@ app.get('/summary', requireAuth, async (req, res) => {
 
   let html = htmlHeader(`${user.displayName} - My Predictions`);
   html += `
-    <h2 style="margin-bottom:4px;">${user.displayName}</h2>
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <h2 style="margin-bottom:4px;">${user.displayName}</h2>
+      ${!user.usernameChanged ? `<a href="/edit-username" style="font-size:12px;background:#1f2937;color:#e5e7eb;padding:4px 8px;border-radius:6px;border:1px solid #374151;">✏️ Edit Name</a>` : ''}
+    </div>
     <p style="color:#9ca3af;font-size:13px;margin-top:0;">Prediction history</p>
 
     <!-- Stats strip -->
