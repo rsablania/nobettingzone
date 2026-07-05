@@ -63,6 +63,8 @@ pgPool.query(`
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const compression = require('compression');
+app.use(compression());
 
 const ODDS_API_KEY = process.env.THE_ODDS_API_KEY;
 const ODDS_API_BASE = 'https://api.the-odds-api.com/v4';
@@ -132,6 +134,12 @@ const SOCCER_SPORT_KEYS = [
 
 let fixtureSnapshot = [];   // array of Odds API event objects
 let snapshotMeta = null;    // { fetchedAt, creditsLeft }
+
+// NEW: Global RAM Cache
+const memoryCache = {
+  messages: null,
+  bets: null
+};
 
 // Load the persisted snapshot from Replit DB into memory on startup
 async function loadFixturesFromDB() {
@@ -471,8 +479,14 @@ async function addBet(bet) {
   await db.set('bets', allBets);
 }
 
+// OPTIMIZED: Get Bets
 async function getBets() {
-  return (await db.get('bets')) || [];
+  if (memoryCache.bets) return memoryCache.bets; // Read from RAM (0ms)
+  
+  // Note: Adjust 'bets' if your DB key is slightly different (e.g., 'allBets')
+  const bets = await db.get('bets') || []; 
+  memoryCache.bets = bets; // Save to RAM for next time
+  return bets;
 }
 
 async function addMessage(msg) {
@@ -481,12 +495,19 @@ async function addMessage(msg) {
   await db.set('messages', all);
 }
 
+// OPTIMIZED: Get Messages
 async function getMessages() {
-  return (await db.get('messages')) || [];
+  if (memoryCache.messages) return memoryCache.messages; // Read from RAM (0ms)
+  
+  const msgs = await db.get('messages') || [];
+  memoryCache.messages = msgs; // Save to RAM for next time
+  return msgs;
 }
 
-async function updateBets(updatedBets) {
-  await db.set('bets', updatedBets);
+// OPTIMIZED: Update Bets
+async function updateBets(newBets) {
+  await db.set('bets', newBets); // Save to DB
+  memoryCache.bets = newBets;    // Immediately update RAM
 }
 
 /* ---------------- SETTLEMENT ENGINE ---------------- */
