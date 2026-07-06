@@ -550,11 +550,11 @@ async function settlePendingBets() {
   }
 
   let changed = false;
-  for (const [fixtureId, fixtureData] of Object.entries(byFixture)) {
+
+for (const [fixtureId, fixtureData] of Object.entries(byFixture)) {
 
     try {
 
-        // Prevent double settlement
         const existingLog = await db.get(`settlementLog:${fixtureId}`);
 
         if (existingLog) {
@@ -564,12 +564,7 @@ async function settlePendingBets() {
 
         const { result, bets } = fixtureData;
 
-        const totalStaked = bets.reduce(
-            (sum, b) => sum + b.stake,
-            0
-        );
-
-        // ---- Step 1 ----
+        const totalStaked = bets.reduce((sum, b) => sum + b.stake, 0);
 
         const sumGross = bets.reduce(
             (sum, b) =>
@@ -586,8 +581,7 @@ async function settlePendingBets() {
             if (b.selection !== result)
                 return 0;
 
-            const gross =
-                b.stake * Number(b.lockedOdds);
+            const gross = b.stake * Number(b.lockedOdds);
 
             const payout = Math.min(
                 sumGross > 0
@@ -602,12 +596,8 @@ async function settlePendingBets() {
 
         });
 
-        // ---- Step 2 ----
-
         const undistributed =
-            Math.round(
-                (totalStaked - totalWinnerPayout) * 10
-            ) / 10;
+            Math.round((totalStaked - totalWinnerPayout) * 10) / 10;
 
         const totalLoserStake = bets.reduce(
             (sum, b) =>
@@ -633,7 +623,7 @@ async function settlePendingBets() {
 
         }
 
-        // ---- Step 3 ----
+        const userNetMap = {};
 
         for (let i = 0; i < bets.length; i++) {
 
@@ -645,70 +635,19 @@ async function settlePendingBets() {
             bets[i].result = result;
 
             bets[i].netPoints =
+                Math.round((tranchePayout[i] - bets[i].stake) * 10) / 10;
+
+            userNetMap[bets[i].user] =
                 Math.round(
-                    (tranchePayout[i] - bets[i].stake) * 10
+                    ((userNetMap[bets[i].user] || 0) + bets[i].netPoints) * 10
                 ) / 10;
 
         }
 
-        // ---- Step 4 ----
+        // Persist updated bets FIRST
+        changed = true;
 
-        const userNetMap = {};
-
-        for (const bet of bets) {
-
-            userNetMap[bet.user] =
-                Math.round(
-                    ((userNetMap[bet.user] || 0) + bet.netPoints) * 10
-                ) / 10;
-
-        }
-
-        // ---- Step 5 ----
-        // Save settlement log BEFORE updating users
-
-        const firstBet = bets[0];
-
-        await db.set(`settlementLog:${fixtureId}`, {
-
-            fixtureId,
-
-            homeTeam: firstBet.homeTeam,
-
-            awayTeam: firstBet.awayTeam,
-
-            leagueName: firstBet.leagueName,
-
-            result,
-
-            totalStaked,
-
-            settledAt: moment()
-                .tz(TIMEZONE)
-                .format("DD MMM YYYY, HH:mm z"),
-
-            entries: bets.map((bet, i) => ({
-
-                user: bet.user,
-
-                selection: bet.selection,
-
-                stake: bet.stake,
-
-                lockedOdds: bet.lockedOdds,
-
-                status: bet.status,
-
-                finalPayout: tranchePayout[i],
-
-                netPoints: bet.netPoints
-
-            }))
-
-        });
-
-        // ---- Step 6 ----
-
+        // Update users
         for (const [userId, netPoints] of Object.entries(userNetMap)) {
 
             const user = await getUserById(userId);
@@ -717,18 +656,42 @@ async function settlePendingBets() {
                 continue;
 
             user.totalNetPoints =
-                Math.round(
-                    (user.totalNetPoints + netPoints) * 10
-                ) / 10;
+                Math.round((user.totalNetPoints + netPoints) * 10) / 10;
 
             await saveUser(user);
 
         }
 
+        // Save settlement log LAST
+        const firstBet = bets[0];
+
+        await db.set(`settlementLog:${fixtureId}`, {
+
+            fixtureId,
+            homeTeam: firstBet.homeTeam,
+            awayTeam: firstBet.awayTeam,
+            leagueName: firstBet.leagueName,
+            result,
+            totalStaked,
+
+            settledAt: moment()
+                .tz(TIMEZONE)
+                .format("DD MMM YYYY, HH:mm z"),
+
+            entries: bets.map((bet, i) => ({
+                user: bet.user,
+                selection: bet.selection,
+                stake: bet.stake,
+                lockedOdds: bet.lockedOdds,
+                status: bet.status,
+                finalPayout: tranchePayout[i],
+                netPoints: bet.netPoints
+            }))
+
+        });
+
         summary.settled += bets.length;
         summary.settledFixtureIds.push(fixtureId);
-
-        changed = true;
 
         console.log(
             `[Settlement] ${fixtureId} settled (${bets.length} bets)`
@@ -737,16 +700,27 @@ async function settlePendingBets() {
     }
     catch (err) {
 
-        console.error(
-            `[Settlement] ${fixtureId}`,
-            err
-        );
+        console.error(`[Settlement] ${fixtureId}`, err);
 
         summary.errors.push(err.message);
 
     }
 
-}}
+}
+
+// Persist updated bets once
+if (changed) {
+
+    console.log("[Settlement] Persisting updated bets...");
+
+    await updateBets(allBets);
+
+    console.log("[Settlement] Bets saved successfully.");
+
+}
+
+return summary;
+}
 
 // Settlement is triggered exclusively by the daily job at 12 noon IST.
 // No auto-polling — every API call is accounted for.
@@ -2775,7 +2749,16 @@ app.get('/admin', async (req, res) => {
     );
 
     html += `
-      <h3 style="font-size:14px;color:#9ca3af;margin-top:0;">Run daily job</h3>
+    <h3 style="font-size:14px;color:#9ca3af;">Repair all pending settled bets</h3>  
+    <form method="POST" action="/admin/repair-bet-statuses"
+      onsubmit="return confirm('Repair all pending settled bets?');">
+    <button type="submit"
+            style="background:#2563eb;border-color:#2563eb;">
+        Repair Bet Statuses
+    </button>
+</form>
+<hr style="border-color:#1f2937;margin:16px 0;">
+<h3 style="font-size:14px;color:#9ca3af;margin-top:0;">Run daily job</h3>
       <form method="POST" action="/admin/run-job">
         <button type="submit" style="background:#7c3aed;border-color:#7c3aed;">Run daily job now</button>
       </form>
@@ -3483,6 +3466,61 @@ app.post('/admin/send-settlement-logs', async (req, res) => {
 
 // LEADERBOARD
 app.get('/leaderboard', (req, res) => res.redirect('/results'));
+
+async function repairBetStatuses() {
+
+    const bets = await getBets();
+    const logKeys = await db.list("settlementLog:");
+
+    let repaired = 0;
+
+    for (const key of logKeys) {
+
+        const log = await db.get(key);
+
+        if (!log || !log.entries) continue;
+
+        for (const entry of log.entries) {
+
+            const bet = bets.find(b =>
+                b.fixtureId === log.fixtureId &&
+                b.user === entry.user &&
+                b.selection === entry.selection &&
+                b.stake === entry.stake &&
+                b.status === "PENDING"
+            );
+
+            if (!bet) continue;
+
+            bet.status = entry.status;
+            bet.result = log.result;
+            bet.netPoints = entry.netPoints;
+
+            repaired++;
+
+        }
+
+    }
+
+    await updateBets(bets);
+
+    console.log(`Repaired ${repaired} bets.`);
+
+    return repaired;
+
+}
+
+app.post("/admin/repair-bet-statuses", async (req, res) => {
+
+    if (!req.session.isAdmin)
+        return res.redirect("/admin");
+
+    const repaired = await repairBetStatuses();
+
+    res.redirect(`/admin?msg=Repaired+${repaired}+bets`);
+
+});
+
 
 // FORUM – chat with emojis (from keyboard) and @Name in text
 app.get('/forum', requireAuth, async (req, res) => {
