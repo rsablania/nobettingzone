@@ -2393,6 +2393,62 @@ app.get('/results', requireAuth, async (req, res) => {
   // 1. Get cached data (Results and Leaderboard are pre-calculated)
   const { logs, users } = await getResultsData();
 
+  // Calculate user stats from settlement logs
+  const userStats = {};
+  const matchTotals = {};
+
+  // Aggregate all tranches for each User + Fixture
+  for (const log of logs) {
+
+    // Backward-compatible match key
+    const matchKey =
+    log.fixtureId ||
+    `${log.homeTeam}|${log.awayTeam}|${log.leagueName || ""}|${log.settledAt}`;
+
+    for (const entry of log.entries) {
+
+        const key = `${entry.user}|${matchKey}`;
+
+        if (!matchTotals[key]) {
+
+            matchTotals[key] = {
+                user: entry.user,
+                matchKey,
+                net: 0
+            };
+
+        }
+
+        matchTotals[key].net += Number(entry.netPoints);
+
+    }
+
+}
+
+  // Convert fixture totals into Win/Loss
+  for (const match of Object.values(matchTotals)) {
+
+      if (!userStats[match.user]) {
+
+          userStats[match.user] = {
+              wins: 0,
+              losses: 0,
+              matches: 0
+          };
+
+      }
+
+      userStats[match.user].matches++;
+
+      if (match.net >= 0)
+          userStats[match.user].wins++;
+
+      else if (match.net < 0)
+          userStats[match.user].losses++;
+
+  }
+    
+
   // 2. Prepare metadata
   const lastUpdated = logs.length ? logs[0].settledAt : null;
   const nextNoon = (() => {
@@ -2416,30 +2472,120 @@ app.get('/results', requireAuth, async (req, res) => {
   // Leaderboard
   html += `
     <div class="card" style="margin-bottom:16px;">
-      <div style="font-size:13px;font-weight:700;color:#22c55e;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">Leaderboard</div>
-      <table style="width:100%;border-collapse:collapse;font-size:13px;">
-        <thead><tr style="color:#6b7280;font-size:11px;border-bottom:1px solid #1f2937;">
-          <th style="text-align:left;padding:4px 0;">Rank</th>
-          <th style="text-align:left;padding:4px 6px;">Player</th>
-          <th style="text-align:right;padding:4px 0;">Net Pts</th>
-        </tr></thead>
-        <tbody>
-          ${users.map((u, i) => {
-            const name = u.displayName || u.userId || u.name || 'Unknown';
-            const net = u.totalNetPoints || 0;
-            const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '#' + (i + 1);
-            const col = net > 0 ? '#22c55e' : net < 0 ? '#ef4444' : '#e5e7eb';
-            return `<tr style="border-bottom:1px solid #1f2937;">
-              <td style="padding:6px 0;color:#9ca3af;">${medal}</td>
-              <td style="padding:6px 6px;color:#e5e7eb;font-weight:${i < 3 ? '600' : '400'};">${name}</td>
-              <td style="padding:6px 0;text-align:right;font-weight:700;color:${col};">${net >= 0 ? '+' : ''}${net.toFixed(1)}</td>
-            </tr>`;
-          }).join('')}
-        </tbody>
-      </table>
+
+    <div style="font-size:13px;font-weight:700;color:#22c55e;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">
+        Leaderboard
     </div>
 
-    <h3 style="font-size:14px;margin-bottom:8px;">Match Results</h3>
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+
+      <thead>
+
+        <tr style="color:#6b7280;font-size:11px;border-bottom:1px solid #1f2937;">
+
+          <th style="text-align:left;padding:4px 0;">#</th>
+
+          <th style="text-align:left;padding:4px 6px;">Player</th>
+
+          <th style="text-align:right;padding:4px 4px;">Net</th>
+
+          <th style="text-align:center;padding:4px 4px;">W-L</th>
+
+          <th style="text-align:right;padding:4px 4px;">Win%</th>
+
+          <th style="text-align:right;padding:4px 0;">Matches</th>
+
+        </tr>
+
+      </thead>
+
+      <tbody>
+
+      ${users.map((u, i) => {
+
+          const name =
+              u.displayName ||
+              u.userId ||
+              u.name ||
+              "Unknown";
+
+          const net = Number(u.totalNetPoints || 0);
+
+          const stats =
+          userStats[u.userId] || {
+              wins: 0,
+              losses: 0,
+              matches: 0
+          };
+
+      const winPct =
+          stats.matches
+              ? ((stats.wins / stats.matches) * 100).toFixed(1)
+              : "0.0";
+
+          const medal =
+              i === 0 ? "🥇"
+              : i === 1 ? "🥈"
+              : i === 2 ? "🥉"
+              : "#" + (i + 1);
+
+          const netColor =
+              net > 0
+                  ? "#22c55e"
+                  : net < 0
+                  ? "#ef4444"
+                  : "#e5e7eb";
+
+          const pctColor =
+              winPct >= 70
+                  ? "#22c55e"
+                  : winPct >= 50
+                  ? "#f59e0b"
+                  : "#ef4444";
+
+          return `
+
+          <tr style="border-bottom:1px solid #1f2937;">
+
+              <td style="padding:6px 0;color:#9ca3af;">
+                  ${medal}
+              </td>
+
+              <td style="padding:6px 6px;color:#e5e7eb;font-weight:${i < 3 ? "600" : "400"};">
+                  ${name}
+              </td>
+
+              <td style="padding:6px 4px;text-align:right;font-weight:700;color:${netColor};">
+                  ${net >= 0 ? "+" : ""}${net.toFixed(1)}
+              </td>
+
+              <td style="padding:6px 4px;text-align:center;">
+                  ${stats.wins}-${stats.losses}
+              </td>
+
+              <td style="padding:6px 4px;text-align:right;font-weight:700;color:${pctColor};">
+                  ${winPct}%
+              </td>
+
+              <td style="padding:6px 0;text-align:right;color:#9ca3af;">
+                  ${stats.matches}
+              </td>
+
+          </tr>
+
+          `;
+
+      }).join("")}
+
+      </tbody>
+
+    </table>
+
+  </div>
+
+  <h3 style="font-size:14px;margin-bottom:8px;">
+      Match Results
+  </h3>
   `;
 
   if (!logs.length) {
@@ -3472,6 +3618,8 @@ async function repairBetStatuses() {
     const bets = await getBets();
     const logKeys = await db.list("settlementLog:");
 
+
+    
     let repaired = 0;
 
     for (const key of logKeys) {
