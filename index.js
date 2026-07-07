@@ -2393,17 +2393,17 @@ app.get('/results', requireAuth, async (req, res) => {
   // 1. Get cached data (Results and Leaderboard are pre-calculated)
   const { logs, users } = await getResultsData();
 
+  const sortBy = (req.query.sort || "net").toLowerCase();
+
   // Calculate user stats from settlement logs
   const userStats = {};
-  const matchTotals = {};
+const matchTotals = {};
 
-  // Aggregate all tranches for each User + Fixture
-  for (const log of logs) {
+for (const log of logs) {
 
-    // Backward-compatible match key
     const matchKey =
-    log.fixtureId ||
-    `${log.homeTeam}|${log.awayTeam}|${log.leagueName || ""}|${log.settledAt}`;
+        log.fixtureId ||
+        `${log.homeTeam}|${log.awayTeam}|${log.leagueName || ""}`;
 
     for (const entry of log.entries) {
 
@@ -2425,29 +2425,26 @@ app.get('/results', requireAuth, async (req, res) => {
 
 }
 
-  // Convert fixture totals into Win/Loss
-  for (const match of Object.values(matchTotals)) {
+for (const match of Object.values(matchTotals)) {
 
-      if (!userStats[match.user]) {
+    if (!userStats[match.user]) {
 
-          userStats[match.user] = {
-              wins: 0,
-              losses: 0,
-              matches: 0
-          };
+        userStats[match.user] = {
+            wins: 0,
+            losses: 0,
+            matches: 0
+        };
 
-      }
+    }
 
-      userStats[match.user].matches++;
+    userStats[match.user].matches++;
 
-      if (match.net >= 0)
-          userStats[match.user].wins++;
+    if (match.net >= 0)
+        userStats[match.user].wins++;
+    else
+        userStats[match.user].losses++;
 
-      else if (match.net < 0)
-          userStats[match.user].losses++;
-
-  }
-    
+}
 
   // 2. Prepare metadata
   const lastUpdated = logs.length ? logs[0].settledAt : null;
@@ -2477,7 +2474,7 @@ app.get('/results', requireAuth, async (req, res) => {
         Leaderboard
     </div>
 
-    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+    <table id="leaderboard" style="width:100%;border-collapse:collapse;font-size:13px;">
 
       <thead>
 
@@ -2487,13 +2484,21 @@ app.get('/results', requireAuth, async (req, res) => {
 
           <th style="text-align:left;padding:4px 6px;">Player</th>
 
-          <th style="text-align:right;padding:4px 4px;">Net</th>
+          <th onclick="sortTable(2, 'number')" style="cursor:pointer;">
+    Net ↓
+</th>
 
-          <th style="text-align:center;padding:4px 4px;">W-L</th>
+          <th onclick="sortTable(3, 'wl')" style="cursor:pointer;">
+    W-L
+</th>
 
-          <th style="text-align:right;padding:4px 4px;">Win%</th>
+<th onclick="sortTable(4, 'percent')" style="cursor:pointer;">
+    Win %
+</th>
 
-          <th style="text-align:right;padding:4px 0;">Matches</th>
+<th onclick="sortTable(5, 'number')" style="cursor:pointer;">
+    Matches
+</th>
 
         </tr>
 
@@ -2624,7 +2629,64 @@ app.get('/results', requireAuth, async (req, res) => {
               }).join('')}
             </tbody>
           </table>
-        </div>`;
+        </div>
+        <script>
+
+const sortState = {};
+
+function sortTable(col, type) {
+
+    const table = document.getElementById("leaderboard");
+    const tbody = table.tBodies[0];
+
+    const rows = [...tbody.rows];
+
+    // Toggle direction
+    sortState[col] = sortState[col] === "asc" ? "desc" : "asc";
+
+    const dir = sortState[col] === "asc" ? 1 : -1;
+
+    rows.sort((a, b) => {
+
+        let x = a.cells[col].innerText.trim();
+        let y = b.cells[col].innerText.trim();
+
+        if (type === "number") {
+
+            x = parseFloat(x.replace("+",""));
+            y = parseFloat(y.replace("+",""));
+
+            return (x - y) * dir;
+
+        }
+
+        if (type === "percent") {
+
+            x = parseFloat(x.replace("%",""));
+            y = parseFloat(y.replace("%",""));
+
+            return (x - y) * dir;
+
+        }
+
+        if (type === "wl") {
+
+            x = parseInt(x.split("-")[0]);
+            y = parseInt(y.split("-")[0]);
+
+            return (x - y) * dir;
+
+        }
+
+        return x.localeCompare(y) * dir;
+
+    });
+
+    rows.forEach(r => tbody.appendChild(r));
+
+}
+
+</script>`;
     }
   }
 
