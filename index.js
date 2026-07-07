@@ -16,6 +16,10 @@ const pgPool = new Pool({
   ssl: { rejectUnauthorized: false } 
 });
 
+let resultsCache = null;
+let resultsCacheUpdated = null;
+let resultsCacheDuration = 0;
+
 // ── PgKV: drop-in replacement for @replit/database ───────────────────────────
 // Same API: get/set/delete/list — backed by a simple kv_store table in Postgres.
 class PgKV {
@@ -135,7 +139,114 @@ const SOCCER_SPORT_KEYS = [
 let fixtureSnapshot = [];   // array of Odds API event objects
 let snapshotMeta = null;    // { fetchedAt, creditsLeft }
 
+async function getAllUsers() {
 
+    const userKeys = await db.list("user:");
+
+    const users = (
+        await Promise.all(
+            userKeys.map(key => db.get(key))
+        )
+    ).filter(Boolean);
+
+    return users;
+
+}
+
+async function rebuildResultsCache() {
+
+    console.time("Rebuild Results Cache");
+    const start = Date.now();
+
+    const logs = await getSettlementLogs();
+
+    const users = await getAllUsers();
+
+    users.sort(
+    (a, b) =>
+        (b.totalNetPoints || 0) -
+        (a.totalNetPoints || 0)
+);
+
+  // Calculate user stats from settlement logs
+  const userStats = {};
+const matchTotals = {};
+
+for (const log of logs) {
+
+    const matchKey =
+        log.fixtureId ||
+        `${log.homeTeam}|${log.awayTeam}|${log.leagueName || ""}`;
+
+    for (const entry of log.entries) {
+
+        const key = `${entry.user}|${matchKey}`;
+
+        if (!matchTotals[key]) {
+
+            matchTotals[key] = {
+                user: entry.user,
+                matchKey,
+                net: 0
+            };
+
+        }
+
+        matchTotals[key].net += Number(entry.netPoints);
+
+    }
+
+}
+
+for (const match of Object.values(matchTotals)) {
+
+    if (!userStats[match.user]) {
+
+        userStats[match.user] = {
+            wins: 0,
+            losses: 0,
+            matches: 0
+        };
+
+    }
+
+    userStats[match.user].matches++;
+
+    if (match.net >= 0)
+        userStats[match.user].wins++;
+    else
+        userStats[match.user].losses++;
+
+}
+
+  // 2. Prepare metadata
+  const lastUpdated = logs.length ? logs[0].settledAt : null;
+  const nextNoon = (() => {
+    const n = moment().tz(TIMEZONE);
+    const candidate = n.clone().startOf('day').hour(12);
+    return n.isBefore(candidate) ? candidate : candidate.add(1, 'day');
+  })();
+  const nextUpdateStr = nextNoon.format('D MMM YYYY, h:mm A z');
+
+    resultsCache = {
+            logs,
+    users,
+    userStats,
+    lastUpdated,
+    nextUpdateStr
+    };
+
+    resultsCacheUpdated = new Date();
+    
+
+    console.timeEnd("Rebuild Results Cache");
+    resultsCacheDuration =
+    Date.now() - start;
+    console.log(
+        `[Results Cache] Rebuilt in ${resultsCacheDuration} ms`
+    );
+
+}
 
 // Load the persisted snapshot from Replit DB into memory on startup
 async function loadFixturesFromDB() {
@@ -484,20 +595,32 @@ async function getBets() {
 // OPTIMIZED: Get Settlement Logs (Historical Results)
 async function getSettlementLogs() {
 
+    console.time("db.list");
+
     const logKeys = await db.list("settlementLog:");
+
+    console.timeEnd("db.list");
+
+    console.time("db.get.all");
+
     const logs = (
-    await Promise.all(
-        logKeys.map(key => db.get(key))
-    )
-).filter(Boolean);
+        await Promise.all(
+            logKeys.map(key => db.get(key))
+        )
+    ).filter(Boolean);
+
+    console.timeEnd("db.get.all");
+
+    console.time("sorting");
 
     logs.sort((a, b) =>
         moment(b.settledAt, "DD MMM YYYY, HH:mm z").valueOf() -
         moment(a.settledAt, "DD MMM YYYY, HH:mm z").valueOf()
     );
 
-    return logs;
+    console.timeEnd("sorting");
 
+    return logs;
 }
 
 async function addMessage(msg) {
@@ -1600,6 +1723,31 @@ app.get('/me', requireAuth, async (req, res) => {
   res.send(html);
 });
 
+app.post('/admin/rebuild-cache', async (req, res) => {
+
+    if (!req.session.isAdmin) {
+        return res.status(403).send('Admin access required');
+    }
+
+    try {
+
+        await rebuildResultsCache();
+
+        req.session.isAdminUnlocked = true;
+
+        res.redirect('/admin?cache=success');
+
+    } catch (err) {
+
+        console.error('Cache rebuild failed:', err);
+
+        req.session.isAdminUnlocked = true;
+
+        res.redirect('/admin?cache=failed');
+    }
+
+});
+
 app.get('/admin/repair-user/:old/:new', async (req,res)=>{
 
     try{
@@ -2390,70 +2538,20 @@ async function getResultsData() {
 // RESULTS – leaderboard + all settled matches inline
 // RESULTS – leaderboard + all settled matches inline
 app.get('/results', requireAuth, async (req, res) => {
-  // 1. Get cached data (Results and Leaderboard are pre-calculated)
-  const { logs, users } = await getResultsData();
+  console.time("results route");
 
-  const sortBy = (req.query.sort || "net").toLowerCase();
+  if (!resultsCache)
+    await rebuildResultsCache();
 
-  // Calculate user stats from settlement logs
-  const userStats = {};
-const matchTotals = {};
+const {
+    logs,
+    users,
+    userStats,
+    lastUpdated,
+    nextUpdateStr
+} = resultsCache;
 
-for (const log of logs) {
-
-    const matchKey =
-        log.fixtureId ||
-        `${log.homeTeam}|${log.awayTeam}|${log.leagueName || ""}`;
-
-    for (const entry of log.entries) {
-
-        const key = `${entry.user}|${matchKey}`;
-
-        if (!matchTotals[key]) {
-
-            matchTotals[key] = {
-                user: entry.user,
-                matchKey,
-                net: 0
-            };
-
-        }
-
-        matchTotals[key].net += Number(entry.netPoints);
-
-    }
-
-}
-
-for (const match of Object.values(matchTotals)) {
-
-    if (!userStats[match.user]) {
-
-        userStats[match.user] = {
-            wins: 0,
-            losses: 0,
-            matches: 0
-        };
-
-    }
-
-    userStats[match.user].matches++;
-
-    if (match.net >= 0)
-        userStats[match.user].wins++;
-    else
-        userStats[match.user].losses++;
-
-}
-
-  // 2. Prepare metadata
-  const lastUpdated = logs.length ? logs[0].settledAt : null;
-  const nextNoon = (() => {
-    const n = moment().tz(TIMEZONE);
-    const candidate = n.clone().startOf('day').hour(12);
-    return n.isBefore(candidate) ? candidate : candidate.add(1, 'day');
-  })();
-  const nextUpdateStr = nextNoon.format('D MMM YYYY, h:mm A z');
+  
 
   // 3. Build HTML
   let html = htmlHeader('Results - No Betting Zone');
@@ -2630,7 +2728,10 @@ for (const match of Object.values(matchTotals)) {
             </tbody>
           </table>
         </div>
-        <script>
+        `;
+    }
+html += `
+    <script>
 
 const sortState = {};
 
@@ -2686,12 +2787,13 @@ function sortTable(col, type) {
 
 }
 
-</script>`;
-    }
+</script>
+`;
   }
 
   html += htmlFooter('results');
   res.send(html);
+  console.timeEnd("results route");
 });
 
 // SETTLE – redirect to admin
@@ -2957,6 +3059,56 @@ app.get('/admin', async (req, res) => {
     );
 
     html += `
+<div class="card" style="margin-bottom:16px;">
+
+    <div style="font-size:13px;font-weight:700;color:#22c55e;text-transform:uppercase;margin-bottom:12px;">
+        Results Cache
+    </div>
+
+    <div style="font-size:13px;color:#9ca3af;margin-bottom:8px;">
+        Last rebuilt:
+        <strong style="color:#e5e7eb;">
+            ${
+                resultsCacheUpdated
+                    ? moment(resultsCacheUpdated)
+                        .tz(TIMEZONE)
+                        .format("DD MMM YYYY, HH:mm:ss z")
+                    : "Never"
+            }
+        </strong>
+    </div>
+
+    <div style="font-size:13px;color:#9ca3af;margin-bottom:8px;">
+        Cached Matches:
+        <strong style="color:#e5e7eb;">
+            ${resultsCache?.logs?.length || 0}
+        </strong>
+    </div>
+
+    <div style="font-size:13px;color:#9ca3af;margin-bottom:8px;">
+        Cached Users:
+        <strong style="color:#e5e7eb;">
+            ${resultsCache?.users?.length || 0}
+        </strong>
+    </div>
+
+    <div style="font-size:13px;color:#9ca3af;margin-bottom:16px;">
+        Cache rebuild time:
+        <strong style="color:#22c55e;">
+            ${resultsCacheDuration || 0} ms
+        </strong>
+    </div>
+
+    <form method="POST" action="/admin/rebuild-cache">
+        <button type="submit" style="width:100%;">
+            Refresh Results Cache
+        </button>
+    </form>
+
+</div>
+`;
+
+    html += `
     <h3 style="font-size:14px;color:#9ca3af;">Repair all pending settled bets</h3>  
     <form method="POST" action="/admin/repair-bet-statuses"
       onsubmit="return confirm('Repair all pending settled bets?');">
@@ -3019,6 +3171,8 @@ app.get('/admin', async (req, res) => {
             <button type="submit" style="margin-top:10px;background:#b45309;border-color:#b45309;">Settle fixture</button>
           </form>`;
       })()}
+
+      
 
       <hr style="border-color:#1f2937;margin:16px 0;">
       <h3 style="font-size:14px;color:#9ca3af;">Re-settle Settled Fixture</h3>
@@ -3189,6 +3343,9 @@ app.get('/admin', async (req, res) => {
           </form>`;
       })()}
 
+      
+      
+      
       <hr style="border-color:#1f2937;margin:16px 0;">
       <h3 style="font-size:14px;color:#9ca3af;">Change admin password</h3>
       ${pwMsg ? `<p style="font-size:13px;color:${pwMsg === 'ok' ? '#22c55e' : '#ef4444'};">${pwMsg === 'ok' ? 'Password changed.' : pwMsg}</p>` : ''}
@@ -3225,6 +3382,8 @@ app.get('/admin', async (req, res) => {
       <p style="margin-top:24px;font-size:12px;color:#6b7280;">🔒 Admin panel locks automatically on next visit.</p>
     `;
   }
+
+  
 
   html += htmlFooter('admin');
   res.send(html);
@@ -3789,8 +3948,19 @@ app.post('/forum', requireAuth, async (req, res) => {
 
 // START SERVER — load persisted snapshot into memory before accepting requests
 // START SERVER — load persisted snapshot into memory before accepting requests
-loadFixturesFromDB().then(() => {
+loadFixturesFromDB().then(async () => {
+
+    console.log("[Startup] Running settlement...");
+
+    await settlePendingBets();
+
+    if (!resultsCache) {
+        console.log("[Startup] Building results cache...");
+        await rebuildResultsCache();
+    }
+
     app.listen(PORT, () => {
         console.log(`Server running on port ${PORT}`);
     });
+
 });
