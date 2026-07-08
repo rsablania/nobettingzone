@@ -2566,13 +2566,13 @@ const {
 
   // Leaderboard
   html += `
-    <div class="card" style="margin-bottom:16px;">
+    <div class="card" style="margin-bottom:16px;overflow-x:auto;-webkit-overflow-scrolling:touch;">
 
     <div style="font-size:13px;font-weight:700;color:#22c55e;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">
         Leaderboard
     </div>
 
-    <table id="leaderboard" style="width:100%;border-collapse:collapse;font-size:13px;">
+    <table id="leaderboard" style="width:100%;border-collapse:collapse;font-size:11px;white-space: nowrap;">
 
       <thead>
 
@@ -2580,7 +2580,7 @@ const {
 
           <th style="text-align:left;padding:4px 0;">#</th>
 
-          <th style="text-align:left;padding:4px 6px;">Player</th>
+          <th style="text-align:left;padding:4px 0;">Player</th>
 
           <th onclick="sortTable(2, 'number')" style="cursor:pointer;">
     Net ↓
@@ -2654,11 +2654,11 @@ const {
                   ${medal}
               </td>
 
-              <td style="padding:6px 6px;color:#e5e7eb;font-weight:${i < 3 ? "600" : "400"};">
+              <td style="padding:6px 2px;color:#e5e7eb;font-weight:${i < 3 ? "600" : "400"};">
                   ${name}
               </td>
 
-              <td style="padding:6px 4px;text-align:right;font-weight:700;color:${netColor};">
+              <td style="padding:6px 2px;text-align:right;font-weight:700;color:${netColor};">
                   ${net >= 0 ? "+" : ""}${net.toFixed(1)}
               </td>
 
@@ -2666,7 +2666,7 @@ const {
                   ${stats.wins}-${stats.losses}
               </td>
 
-              <td style="padding:6px 4px;text-align:right;font-weight:700;color:${pctColor};">
+              <td style="padding:6px 2px;text-align:right;font-weight:700;color:${pctColor};">
                   ${winPct}%
               </td>
 
