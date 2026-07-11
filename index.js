@@ -1,19 +1,19 @@
-const express = require('express');
-const axios = require('axios');
-const moment = require('moment-timezone');
-const session = require('express-session');
-const connectPgSimple = require('connect-pg-simple');
-const { Pool } = require('pg');
-const bcrypt = require('bcryptjs');
-const { Resend } = require('resend');
+const express = require("express");
+const axios = require("axios");
+const moment = require("moment-timezone");
+const session = require("express-session");
+const connectPgSimple = require("connect-pg-simple");
+const { Pool } = require("pg");
+const bcrypt = require("bcryptjs");
+const { Resend } = require("resend");
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 // ── PostgreSQL pool (shared by session store and kv store) ────────────────────
 // const pgPool = new Pool({ connectionString: process.env.DATABASE_URL });
 
-const pgPool = new Pool({ 
+const pgPool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false } 
+  ssl: { rejectUnauthorized: false },
 });
 
 let resultsCache = null;
@@ -23,10 +23,13 @@ let resultsCacheDuration = 0;
 // ── PgKV: drop-in replacement for @replit/database ───────────────────────────
 // Same API: get/set/delete/list — backed by a simple kv_store table in Postgres.
 class PgKV {
-  constructor(pool) { this.pool = pool; }
+  constructor(pool) {
+    this.pool = pool;
+  }
   async get(key) {
     const { rows } = await this.pool.query(
-      'SELECT value FROM kv_store WHERE key = $1', [key]
+      "SELECT value FROM kv_store WHERE key = $1",
+      [key],
     );
     return rows.length ? rows[0].value : null;
   }
@@ -34,27 +37,32 @@ class PgKV {
     await this.pool.query(
       `INSERT INTO kv_store (key, value) VALUES ($1, $2::jsonb)
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-      [key, JSON.stringify(value)]
+      [key, JSON.stringify(value)],
     );
   }
   async delete(key) {
-    await this.pool.query('DELETE FROM kv_store WHERE key = $1', [key]);
+    await this.pool.query("DELETE FROM kv_store WHERE key = $1", [key]);
   }
   async list(prefix) {
     // Use '!' as escape character — simple and single-char
-    const safe = prefix.replace(/!/g, '!!').replace(/%/g, '!%').replace(/_/g, '!_');
+    const safe = prefix
+      .replace(/!/g, "!!")
+      .replace(/%/g, "!%")
+      .replace(/_/g, "!_");
     const { rows } = await this.pool.query(
       "SELECT key FROM kv_store WHERE key LIKE $1 ESCAPE '!'",
-      [safe + '%']
+      [safe + "%"],
     );
-    return rows.map(r => r.key);
+    return rows.map((r) => r.key);
   }
 }
 
 const db = new PgKV(pgPool);
 
 // ── Bootstrap DB tables (idempotent) ─────────────────────────────────────────
-pgPool.query(`
+pgPool
+  .query(
+    `
   CREATE TABLE IF NOT EXISTS kv_store (key text PRIMARY KEY, value jsonb);
   CREATE TABLE IF NOT EXISTS "session" (
     "sid" varchar NOT NULL COLLATE "default",
@@ -63,24 +71,26 @@ pgPool.query(`
     CONSTRAINT "session_pkey" PRIMARY KEY ("sid")
   );
   CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire");
-`).catch(e => console.error('[DB] Table init error:', e));
+`,
+  )
+  .catch((e) => console.error("[DB] Table init error:", e));
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const compression = require('compression');
+const compression = require("compression");
 app.use(compression());
 
 const ODDS_API_KEY = process.env.THE_ODDS_API_KEY;
-const ODDS_API_BASE = 'https://api.the-odds-api.com/v4';
+const ODDS_API_BASE = "https://api.the-odds-api.com/v4";
 
 const API_FOOTBALL_KEY = process.env.API_FOOTBALL_KEY;
-const API_FOOTBALL_BASE = 'https://v3.football.api-sports.io';
-const API_FOOTBALL_WC_LEAGUE = 1;   // FIFA World Cup league ID
+const API_FOOTBALL_BASE = "https://v3.football.api-sports.io";
+const API_FOOTBALL_WC_LEAGUE = 1; // FIFA World Cup league ID
 const API_FOOTBALL_WC_SEASON = 2026;
 
 // Normalize team name for fuzzy matching across APIs
 function normalizeTeamName(name) {
-  return (name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return (name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
 // Fetch completed match results from the Odds API scores endpoint.
@@ -89,196 +99,211 @@ async function fetchResultsFromOddsApi() {
   const resultMap = {};
   for (const sportKey of SOCCER_SPORT_KEYS) {
     try {
-      const resp = await axios.get(`${ODDS_API_BASE}/sports/${sportKey}/scores`, {
-        params: { apiKey: ODDS_API_KEY, daysFrom: 3 },
-      });
+      const resp = await axios.get(
+        `${ODDS_API_BASE}/sports/${sportKey}/scores`,
+        {
+          params: { apiKey: ODDS_API_KEY, daysFrom: 3 },
+        },
+      );
       const games = Array.isArray(resp.data) ? resp.data : [];
       for (const g of games) {
         if (!g.completed || !g.scores || g.scores.length < 2) continue;
-        const homeScore = parseInt(g.scores.find(s => s.name === g.home_team)?.score ?? -1);
-        const awayScore = parseInt(g.scores.find(s => s.name === g.away_team)?.score ?? -1);
-        if (isNaN(homeScore) || isNaN(awayScore) || homeScore < 0 || awayScore < 0) continue;
-        resultMap[g.id] = homeScore > awayScore ? 'Home' : awayScore > homeScore ? 'Away' : 'Draw';
+        const homeScore = parseInt(
+          g.scores.find((s) => s.name === g.home_team)?.score ?? -1,
+        );
+        const awayScore = parseInt(
+          g.scores.find((s) => s.name === g.away_team)?.score ?? -1,
+        );
+        if (
+          isNaN(homeScore) ||
+          isNaN(awayScore) ||
+          homeScore < 0 ||
+          awayScore < 0
+        )
+          continue;
+        resultMap[g.id] = {
+          result:
+            homeScore > awayScore
+              ? "Home"
+              : awayScore > homeScore
+                ? "Away"
+                : "Draw",
+
+          homeGoals: homeScore,
+          awayGoals: awayScore,
+        };
       }
     } catch (e) {
-      console.error(`[Settlement] Odds API scores error [${sportKey}]:`, e.message);
+      console.error(
+        `[Settlement] Odds API scores error [${sportKey}]:`,
+        e.message,
+      );
     }
   }
   return resultMap;
 }
 
-const TIMEZONE = 'Asia/Kolkata';
+const TIMEZONE = "Asia/Kolkata";
 const MAX_STAKE_PER_FIXTURE = 500;
 const MIN_TRANCHE = 50;
 const STAKE_OPTIONS = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500];
 
 app.use(express.urlencoded({ extended: true }));
-app.use(express.json({ limit: '20mb' }));
+app.use(express.json({ limit: "20mb" }));
 
 // PostgreSQL-backed session store — works in both dev and production
 const PgSession = connectPgSimple(session);
 
-app.use(session({
-  secret: process.env.SESSION_SECRET || 'dev-secret',
-  resave: false,
-  saveUninitialized: false,
-  rolling: true,
-  store: new PgSession({ pool: pgPool, tableName: 'session' }),
-  cookie: { maxAge: 30 * 24 * 60 * 60 * 1000 }   // 30 days
-}));
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET || "dev-secret",
+    resave: false,
+    saveUninitialized: false,
+    rolling: true,
+    store: new PgSession({ pool: pgPool, tableName: "session" }),
+    cookie: { maxAge: 30 * 24 * 60 * 60 * 1000 }, // 30 days
+  }),
+);
 
 // All soccer sport keys on The Odds API free plan
-const SOCCER_SPORT_KEYS = [
-  'soccer_fifa_world_cup',
-];
+const SOCCER_SPORT_KEYS = ["soccer_fifa_world_cup"];
 
 // ── IN-MEMORY SNAPSHOT ───────────────────────────────────────────────────────
 // All fixture+odds data lives here. Populated from DB on startup, refreshed
 // once daily at 12 noon IST by the daily job. User requests NEVER call the API.
 
-let fixtureSnapshot = [];   // array of Odds API event objects
-let snapshotMeta = null;    // { fetchedAt, creditsLeft }
+let fixtureSnapshot = []; // array of Odds API event objects
+let snapshotMeta = null; // { fetchedAt, creditsLeft }
 
 async function getAllUsers() {
+  const userKeys = await db.list("user:");
 
-    const userKeys = await db.list("user:");
+  const users = (await Promise.all(userKeys.map((key) => db.get(key)))).filter(
+    Boolean,
+  );
 
-    const users = (
-        await Promise.all(
-            userKeys.map(key => db.get(key))
-        )
-    ).filter(Boolean);
-
-    return users;
-
+  return users;
 }
 
 async function rebuildResultsCache() {
+  console.time("Rebuild Results Cache");
+  const start = Date.now();
 
-    console.time("Rebuild Results Cache");
-    const start = Date.now();
+  const logs = await getSettlementLogs();
 
-    const logs = await getSettlementLogs();
+  const users = await getAllUsers();
 
-    const users = await getAllUsers();
-
-    users.sort(
-    (a, b) =>
-        (b.totalNetPoints || 0) -
-        (a.totalNetPoints || 0)
-);
+  users.sort((a, b) => (b.totalNetPoints || 0) - (a.totalNetPoints || 0));
 
   // Calculate user stats from settlement logs
   const userStats = {};
-const matchTotals = {};
+  const matchTotals = {};
 
-for (const log of logs) {
-
+  for (const log of logs) {
     const matchKey =
-        log.fixtureId ||
-        `${log.homeTeam}|${log.awayTeam}|${log.leagueName || ""}`;
+      log.fixtureId ||
+      `${log.homeTeam}|${log.awayTeam}|${log.leagueName || ""}`;
 
     for (const entry of log.entries) {
+      const key = `${entry.user}|${matchKey}`;
 
-        const key = `${entry.user}|${matchKey}`;
-
-        if (!matchTotals[key]) {
-
-            matchTotals[key] = {
-                user: entry.user,
-                matchKey,
-                net: 0
-            };
-
-        }
-
-        matchTotals[key].net += Number(entry.netPoints);
-
-    }
-
-}
-
-for (const match of Object.values(matchTotals)) {
-
-    if (!userStats[match.user]) {
-
-        userStats[match.user] = {
-            wins: 0,
-            losses: 0,
-            matches: 0
+      if (!matchTotals[key]) {
+        matchTotals[key] = {
+          user: entry.user,
+          matchKey,
+          net: 0,
         };
+      }
 
+      matchTotals[key].net += Number(entry.netPoints);
+    }
+  }
+
+  for (const match of Object.values(matchTotals)) {
+    if (!userStats[match.user]) {
+      userStats[match.user] = {
+        wins: 0,
+        losses: 0,
+        matches: 0,
+      };
     }
 
     userStats[match.user].matches++;
 
-    if (match.net >= 0)
-        userStats[match.user].wins++;
-    else
-        userStats[match.user].losses++;
-
-}
+    if (match.net >= 0) userStats[match.user].wins++;
+    else userStats[match.user].losses++;
+  }
 
   // 2. Prepare metadata
   const lastUpdated = logs.length ? logs[0].settledAt : null;
   const nextNoon = (() => {
     const n = moment().tz(TIMEZONE);
-    const candidate = n.clone().startOf('day').hour(12);
-    return n.isBefore(candidate) ? candidate : candidate.add(1, 'day');
+    const candidate = n.clone().startOf("day").hour(12);
+    return n.isBefore(candidate) ? candidate : candidate.add(1, "day");
   })();
-  const nextUpdateStr = nextNoon.format('D MMM YYYY, h:mm A z');
+  const nextUpdateStr = nextNoon.format("D MMM YYYY, h:mm A z");
 
-    resultsCache = {
-            logs,
+  resultsCache = {
+    logs,
     users,
     userStats,
     lastUpdated,
-    nextUpdateStr
-    };
+    nextUpdateStr,
+  };
 
-    resultsCacheUpdated = new Date();
-    
+  resultsCacheUpdated = new Date();
 
-    console.timeEnd("Rebuild Results Cache");
-    resultsCacheDuration =
-    Date.now() - start;
-    console.log(
-        `[Results Cache] Rebuilt in ${resultsCacheDuration} ms`
-    );
-
+  console.timeEnd("Rebuild Results Cache");
+  resultsCacheDuration = Date.now() - start;
+  console.log(`[Results Cache] Rebuilt in ${resultsCacheDuration} ms`);
 }
 
 // Load the persisted snapshot from Replit DB into memory on startup
 async function loadFixturesFromDB() {
   try {
-    const stored = await db.get('snapshot:fixtures');
+    const stored = await db.get("snapshot:fixtures");
     if (stored && Array.isArray(stored.events)) {
       fixtureSnapshot = stored.events;
-      snapshotMeta = { fetchedAt: stored.fetchedAt, creditsLeft: stored.creditsLeft };
-      console.log(`[Snapshot] Loaded ${fixtureSnapshot.length} events from DB (fetched ${stored.fetchedAt})`);
+      snapshotMeta = {
+        fetchedAt: stored.fetchedAt,
+        creditsLeft: stored.creditsLeft,
+      };
+      console.log(
+        `[Snapshot] Loaded ${fixtureSnapshot.length} events from DB (fetched ${stored.fetchedAt})`,
+      );
     } else {
-      console.log('[Snapshot] No stored snapshot found — waiting for daily job at 12 noon IST.');
+      console.log(
+        "[Snapshot] No stored snapshot found — waiting for daily job at 12 noon IST.",
+      );
     }
   } catch (e) {
-    console.error('[Snapshot] Failed to load from DB:', e);
+    console.error("[Snapshot] Failed to load from DB:", e);
   }
 }
 
 // Fetch all sport keys, store results in DB and memory
 async function fetchAndStoreFixtures() {
-  console.log('[DailyJob] Fetching fixtures+odds from all sport keys...');
+  console.log("[DailyJob] Fetching fixtures+odds from all sport keys...");
   const all = [];
-  let creditsLeft = '?';
+  let creditsLeft = "?";
   for (const sportKey of SOCCER_SPORT_KEYS) {
     try {
       const resp = await axios.get(`${ODDS_API_BASE}/sports/${sportKey}/odds`, {
-        params: { apiKey: ODDS_API_KEY, regions: 'eu', markets: 'h2h', oddsFormat: 'decimal' }
+        params: {
+          apiKey: ODDS_API_KEY,
+          regions: "eu",
+          markets: "h2h",
+          oddsFormat: "decimal",
+        },
       });
       const events = Array.isArray(resp.data) ? resp.data : [];
       all.push(...events);
-      const rem = resp.headers['x-requests-remaining'];
+      const rem = resp.headers["x-requests-remaining"];
       if (rem) creditsLeft = rem;
-      if (events.length > 0) console.log(`[DailyJob] ${sportKey}: ${events.length} events. Credits left: ${rem}`);
+      if (events.length > 0)
+        console.log(
+          `[DailyJob] ${sportKey}: ${events.length} events. Credits left: ${rem}`,
+        );
     } catch (e) {
       console.error(`[DailyJob] Error [${sportKey}]:`, e.message);
     }
@@ -297,79 +322,108 @@ async function fetchAndStoreFixtures() {
   function hasLargeVariation(newOdds, prevOdds) {
     if (!prevOdds) return false;
     for (const no of newOdds) {
-      const po = prevOdds.find(o => o.value === no.value);
+      const po = prevOdds.find((o) => o.value === no.value);
       if (!po) continue;
-      const change = Math.abs(parseFloat(no.odd) - parseFloat(po.odd)) / parseFloat(po.odd);
-      if (change > 0.50) return true;
+      const change =
+        Math.abs(parseFloat(no.odd) - parseFloat(po.odd)) / parseFloat(po.odd);
+      if (change > 0.5) return true;
     }
     return false;
   }
 
-  let fallbackCount = 0, pendingCount = 0, acceptedPendingCount = 0;
-  const validated = await Promise.all(all.map(async ev => {
-    const tag = `"${ev.home_team} vs ${ev.away_team}"`;
-    const newOdds = extractOdds(ev);
+  let fallbackCount = 0,
+    pendingCount = 0,
+    acceptedPendingCount = 0;
+  const validated = await Promise.all(
+    all.map(async (ev) => {
+      const tag = `"${ev.home_team} vs ${ev.away_team}"`;
+      const newOdds = extractOdds(ev);
 
-    // Step 1 — implied probability check
-    if (newOdds === null) {
+      // Step 1 — implied probability check
+      if (newOdds === null) {
+        const prev = prevByEventId[ev.id];
+        const prevOdds = prev ? extractOdds(prev) : null;
+        if (prevOdds) {
+          fallbackCount++;
+          console.warn(
+            `[OddsValidation] Bad implied-prob for ${tag} — keeping previous odds`,
+          );
+          return { ...ev, bookmakers: prev.bookmakers };
+        }
+        console.warn(
+          `[OddsValidation] Bad implied-prob for ${tag} — no fallback available`,
+        );
+        return { ...ev, bookmakers: [] };
+      }
+
+      // Step 2 — large variation check (>50% on any outcome vs snapshot)
       const prev = prevByEventId[ev.id];
       const prevOdds = prev ? extractOdds(prev) : null;
-      if (prevOdds) {
-        fallbackCount++;
-        console.warn(`[OddsValidation] Bad implied-prob for ${tag} — keeping previous odds`);
-        return { ...ev, bookmakers: prev.bookmakers };
+
+      if (prevOdds && hasLargeVariation(newOdds, prevOdds)) {
+        const pendingKey = `pendingOdds:${ev.id}`;
+        const existing = await db.get(pendingKey);
+        if (existing) {
+          // Second consecutive update with large variation — accept it
+          await db.delete(pendingKey);
+          acceptedPendingCount++;
+          console.log(
+            `[OddsVariation] Accepted persistent large move for ${tag}`,
+          );
+          return ev;
+        } else {
+          // First occurrence — hold, keep old odds
+          await db.set(pendingKey, {
+            bookmakers: ev.bookmakers,
+            detectedAt: Date.now(),
+          });
+          pendingCount++;
+          console.warn(
+            `[OddsVariation] >50% shift detected for ${tag} — holding for next update`,
+          );
+          return { ...ev, bookmakers: prev.bookmakers };
+        }
       }
-      console.warn(`[OddsValidation] Bad implied-prob for ${tag} — no fallback available`);
-      return { ...ev, bookmakers: [] };
-    }
 
-    // Step 2 — large variation check (>50% on any outcome vs snapshot)
-    const prev = prevByEventId[ev.id];
-    const prevOdds = prev ? extractOdds(prev) : null;
-
-    if (prevOdds && hasLargeVariation(newOdds, prevOdds)) {
+      // Odds are clean and within normal variation — accept; clear any stale pending entry
       const pendingKey = `pendingOdds:${ev.id}`;
-      const existing = await db.get(pendingKey);
-      if (existing) {
-        // Second consecutive update with large variation — accept it
+      const stale = await db.get(pendingKey);
+      if (stale) {
         await db.delete(pendingKey);
-        acceptedPendingCount++;
-        console.log(`[OddsVariation] Accepted persistent large move for ${tag}`);
-        return ev;
-      } else {
-        // First occurrence — hold, keep old odds
-        await db.set(pendingKey, { bookmakers: ev.bookmakers, detectedAt: Date.now() });
-        pendingCount++;
-        console.warn(`[OddsVariation] >50% shift detected for ${tag} — holding for next update`);
-        return { ...ev, bookmakers: prev.bookmakers };
+        console.log(
+          `[OddsVariation] Variation resolved for ${tag} — cleared pending`,
+        );
       }
-    }
+      return ev;
+    }),
+  );
 
-    // Odds are clean and within normal variation — accept; clear any stale pending entry
-    const pendingKey = `pendingOdds:${ev.id}`;
-    const stale = await db.get(pendingKey);
-    if (stale) {
-      await db.delete(pendingKey);
-      console.log(`[OddsVariation] Variation resolved for ${tag} — cleared pending`);
-    }
-    return ev;
-  }));
+  if (fallbackCount > 0)
+    console.log(
+      `[OddsValidation] ${fallbackCount} event(s) fell back to previous odds`,
+    );
+  if (pendingCount > 0)
+    console.log(
+      `[OddsVariation] ${pendingCount} event(s) held pending (>50% shift)`,
+    );
+  if (acceptedPendingCount > 0)
+    console.log(
+      `[OddsVariation] ${acceptedPendingCount} event(s) accepted after persistent shift`,
+    );
 
-  if (fallbackCount > 0) console.log(`[OddsValidation] ${fallbackCount} event(s) fell back to previous odds`);
-  if (pendingCount > 0) console.log(`[OddsVariation] ${pendingCount} event(s) held pending (>50% shift)`);
-  if (acceptedPendingCount > 0) console.log(`[OddsVariation] ${acceptedPendingCount} event(s) accepted after persistent shift`);
-
-  const fetchedAt = moment().tz(TIMEZONE).format('DD MMM YYYY, HH:mm z');
+  const fetchedAt = moment().tz(TIMEZONE).format("DD MMM YYYY, HH:mm z");
   const stored = { events: validated, fetchedAt, creditsLeft };
-  await db.set('snapshot:fixtures', stored);
+  await db.set("snapshot:fixtures", stored);
   fixtureSnapshot = validated;
   snapshotMeta = { fetchedAt, creditsLeft };
-  console.log(`[DailyJob] Snapshot stored: ${validated.length} total events. Credits remaining: ${creditsLeft}`);
+  console.log(
+    `[DailyJob] Snapshot stored: ${validated.length} total events. Credits remaining: ${creditsLeft}`,
+  );
 }
 
 // Read a single event from the in-memory snapshot (no API call)
 async function getEventById(id) {
-  return fixtureSnapshot.find(e => e.id === id) || null;
+  return fixtureSnapshot.find((e) => e.id === id) || null;
 }
 
 // ── DAILY SCHEDULER ───────────────────────────────────────────────────────────
@@ -377,25 +431,33 @@ async function getEventById(id) {
 // Checks every minute; skips if already ran today.
 
 async function runDailyJob() {
-  console.log('[DailyJob] Starting — settling bets, then fetching fixtures...');
-  try { await settlePendingBets(); } catch (e) { console.error('[DailyJob] Settlement error:', e.message); }
-  try { await fetchAndStoreFixtures(); } catch (e) { console.error('[DailyJob] Fetch error:', e.message); }
-  const today = moment().tz(TIMEZONE).format('YYYY-MM-DD');
-  await db.set('dailyJob:lastRun', today);
-  await db.set('dailyJob:scheduledRun', today); // separate key — only set by the scheduler
-  console.log('[DailyJob] Done for', today);
+  console.log("[DailyJob] Starting — settling bets, then fetching fixtures...");
+  try {
+    await settlePendingBets();
+  } catch (e) {
+    console.error("[DailyJob] Settlement error:", e.message);
+  }
+  try {
+    await fetchAndStoreFixtures();
+  } catch (e) {
+    console.error("[DailyJob] Fetch error:", e.message);
+  }
+  const today = moment().tz(TIMEZONE).format("YYYY-MM-DD");
+  await db.set("dailyJob:lastRun", today);
+  await db.set("dailyJob:scheduledRun", today); // separate key — only set by the scheduler
+  console.log("[DailyJob] Done for", today);
 }
 
 setInterval(async () => {
   try {
     const now = moment().tz(TIMEZONE);
-    if (now.hour() !== 12) return;                                  // only run during 12 noon IST hour
-    const today = now.format('YYYY-MM-DD');
-    const lastScheduled = await db.get('dailyJob:scheduledRun');   // not affected by manual admin runs
+    if (now.hour() !== 12) return; // only run during 12 noon IST hour
+    const today = now.format("YYYY-MM-DD");
+    const lastScheduled = await db.get("dailyJob:scheduledRun"); // not affected by manual admin runs
     if (lastScheduled === today) return;
     await runDailyJob();
   } catch (e) {
-    console.error('[Scheduler] Error:', e.message);
+    console.error("[Scheduler] Error:", e.message);
   }
 }, 60 * 1000);
 
@@ -408,31 +470,34 @@ setInterval(async () => {
     const now = moment().tz(TIMEZONE);
     const h = now.hour();
     if (h % 2 !== 0 || now.minute() !== 0) return; // only on even hours at :00
-    if (h === 12) return;                            // daily job owns the 12:00 slot
-    const key = `twoHourly:${now.format('YYYY-MM-DD-HH')}`;
+    if (h === 12) return; // daily job owns the 12:00 slot
+    const key = `twoHourly:${now.format("YYYY-MM-DD-HH")}`;
     if (await db.get(key)) return;
     await db.set(key, true);
     if (h >= 0 && h <= 10) {
       // Overnight — settle finished matches (scores endpoint, 1 credit)
-      console.log(`[NightlySettle] Running settlement at ${now.format('HH:mm z')}…`);
+      console.log(
+        `[NightlySettle] Running settlement at ${now.format("HH:mm z")}…`,
+      );
       await settlePendingBets();
       console.log(`[NightlySettle] Done`);
     } else {
       // Afternoon/evening — refresh odds + fixtures (odds endpoint, 1 credit)
-      console.log(`[OddsRefresh] Fetching latest odds at ${now.format('HH:mm z')}…`);
+      console.log(
+        `[OddsRefresh] Fetching latest odds at ${now.format("HH:mm z")}…`,
+      );
       await fetchAndStoreFixtures();
       console.log(`[OddsRefresh] Done`);
     }
   } catch (e) {
-    console.error('[TwoHourly] Error:', e.message);
+    console.error("[TwoHourly] Error:", e.message);
   }
 }, 60 * 1000);
-
 
 // Leaderboard email at 11:59 PM IST daily
 async function sendLeaderboardEmail() {
   try {
-    const keys = await db.list('user:');
+    const keys = await db.list("user:");
     const users = [];
     for (const key of keys) {
       const u = await db.get(key);
@@ -441,21 +506,24 @@ async function sendLeaderboardEmail() {
     users.sort((a, b) => b.totalNetPoints - a.totalNetPoints);
     if (!users.length) return;
 
-    const rows = users.map((u, i) => {
-      const name = u.displayName || u.userId || 'Unknown';
-      const pts = (u.totalNetPoints || 0).toFixed(1);
-      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`;
-      return `<tr style="border-bottom:1px solid #e5e7eb;">
+    const rows = users
+      .map((u, i) => {
+        const name = u.displayName || u.userId || "Unknown";
+        const pts = (u.totalNetPoints || 0).toFixed(1);
+        const medal =
+          i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `#${i + 1}`;
+        return `<tr style="border-bottom:1px solid #e5e7eb;">
         <td style="padding:8px 12px;">${medal}</td>
         <td style="padding:8px 12px;">${name}</td>
         <td style="padding:8px 12px;text-align:right;font-weight:bold;">${pts}</td>
       </tr>`;
-    }).join('');
+      })
+      .join("");
 
-    const date = moment().tz(TIMEZONE).format('DD MMM YYYY');
+    const date = moment().tz(TIMEZONE).format("DD MMM YYYY");
     await resend.emails.send({
-      from: 'No Betting Zone <onboarding@resend.dev>',
-      to: 'gletterdash@gmail.com',
+      from: "No Betting Zone <onboarding@resend.dev>",
+      to: "gletterdash@gmail.com",
       subject: `Leaderboard Update — ${date}`,
       html: `
         <h2 style="font-family:sans-serif;">🏆 No Betting Zone — Daily Leaderboard</h2>
@@ -470,25 +538,25 @@ async function sendLeaderboardEmail() {
           </thead>
           <tbody>${rows}</tbody>
         </table>
-      `
+      `,
     });
-    console.log('[LeaderboardEmail] Sent successfully for', date);
+    console.log("[LeaderboardEmail] Sent successfully for", date);
   } catch (e) {
-    console.error('[LeaderboardEmail] Error:', e.message);
+    console.error("[LeaderboardEmail] Error:", e.message);
   }
 }
 
 setInterval(async () => {
   try {
     const now = moment().tz(TIMEZONE);
-    if (now.hour() !== 12 || now.minute() !== 59) return;          // only at 12:59 PM IST
-    const today = now.format('YYYY-MM-DD');
-    const lastSent = await db.get('leaderboardEmail:lastSent');
-    if (lastSent === today) return;                                  // already sent today
-    await db.set('leaderboardEmail:lastSent', today);
+    if (now.hour() !== 12 || now.minute() !== 59) return; // only at 12:59 PM IST
+    const today = now.format("YYYY-MM-DD");
+    const lastSent = await db.get("leaderboardEmail:lastSent");
+    if (lastSent === today) return; // already sent today
+    await db.set("leaderboardEmail:lastSent", today);
     await sendLeaderboardEmail();
   } catch (e) {
-    console.error('[LeaderboardEmail Scheduler] Error:', e.message);
+    console.error("[LeaderboardEmail Scheduler] Error:", e.message);
   }
 }, 60 * 1000);
 
@@ -496,7 +564,7 @@ setInterval(async () => {
 // Validate via implied probability sum (overround) only.
 // Sum of 1/H + 1/D + 1/A should sit in a realistic bookmaker range.
 const IMPLIED_PROB_MIN = 0.85;
-const IMPLIED_PROB_MAX = 1.50;
+const IMPLIED_PROB_MAX = 1.5;
 
 function validateOddsList(outcomes) {
   if (!outcomes || outcomes.length !== 3) return false;
@@ -511,13 +579,13 @@ function validateOddsList(outcomes) {
 // Extract h2h odds from an event → [{ value:'Home'|'Draw'|'Away', odd:'1.90' }]
 function extractOdds(event) {
   if (!event?.bookmakers?.length) return null;
-  const market = event.bookmakers[0].markets?.find(m => m.key === 'h2h');
+  const market = event.bookmakers[0].markets?.find((m) => m.key === "h2h");
   if (!market?.outcomes?.length) return null;
   const order = { Home: 0, Draw: 1, Away: 2 };
-  const outcomes = market.outcomes.map(o => {
-    let value = 'Away';
-    if (o.name === 'Draw') value = 'Draw';
-    else if (o.name === event.home_team) value = 'Home';
+  const outcomes = market.outcomes.map((o) => {
+    let value = "Away";
+    if (o.name === "Draw") value = "Draw";
+    else if (o.name === event.home_team) value = "Home";
     return { value, odd: Number(o.price).toFixed(2) };
   });
   outcomes.sort((a, b) => order[a.value] - order[b.value]);
@@ -529,14 +597,18 @@ function extractOdds(event) {
 // Determine match result from Odds API score object
 function getResultFromScore(scoreEvent) {
   if (!scoreEvent.scores?.length) return null;
-  const homeScore = scoreEvent.scores.find(s => s.name === scoreEvent.home_team);
-  const awayScore = scoreEvent.scores.find(s => s.name === scoreEvent.away_team);
+  const homeScore = scoreEvent.scores.find(
+    (s) => s.name === scoreEvent.home_team,
+  );
+  const awayScore = scoreEvent.scores.find(
+    (s) => s.name === scoreEvent.away_team,
+  );
   const hs = parseInt(homeScore?.score ?? scoreEvent.scores[0]?.score);
   const as = parseInt(awayScore?.score ?? scoreEvent.scores[1]?.score);
   if (isNaN(hs) || isNaN(as)) return null;
-  if (hs > as) return 'Home';
-  if (as > hs) return 'Away';
-  return 'Draw';
+  if (hs > as) return "Home";
+  if (as > hs) return "Away";
+  return "Draw";
 }
 
 /* ---------------- REPLIT DB HELPERS ---------------- */
@@ -571,72 +643,70 @@ async function createUser(userId, email, passwordHash) {
 }
 
 function requireAuth(req, res, next) {
-  if (!req.session.userId) return res.redirect('/login');
+  if (!req.session.userId) return res.redirect("/login");
   next();
 }
 
-const DEFAULT_ADMIN_PASSWORD = 'locomotive123@';
+const DEFAULT_ADMIN_PASSWORD = "locomotive123@";
 async function getAdminPassword() {
-  return (await db.get('admin:password')) || DEFAULT_ADMIN_PASSWORD;
+  return (await db.get("admin:password")) || DEFAULT_ADMIN_PASSWORD;
 }
 
 async function addBet(bet) {
   const allBets = await getBets();
-    allBets.push(bet);
-    await updateBets(allBets);
+  allBets.push(bet);
+  await updateBets(allBets);
 }
 
 // OPTIMIZED: Get Bets
 async function getBets() {
   // Always fetch directly from DB to ensure real-time data
-  return await db.get('bets') || [];
+  return (await db.get("bets")) || [];
 }
 
 // OPTIMIZED: Get Settlement Logs (Historical Results)
 async function getSettlementLogs() {
+  console.time("db.list");
 
-    console.time("db.list");
+  const logKeys = await db.list("settlementLog:");
 
-    const logKeys = await db.list("settlementLog:");
+  console.timeEnd("db.list");
 
-    console.timeEnd("db.list");
+  console.time("db.get.all");
 
-    console.time("db.get.all");
+  const logs = (await Promise.all(logKeys.map((key) => db.get(key)))).filter(
+    Boolean,
+  );
 
-    const logs = (
-        await Promise.all(
-            logKeys.map(key => db.get(key))
-        )
-    ).filter(Boolean);
+  console.timeEnd("db.get.all");
 
-    console.timeEnd("db.get.all");
+  console.time("sorting");
 
-    console.time("sorting");
+  logs.sort(
+    (a, b) =>
+      moment(b.settledAt, "DD MMM YYYY, HH:mm z").valueOf() -
+      moment(a.settledAt, "DD MMM YYYY, HH:mm z").valueOf(),
+  );
 
-    logs.sort((a, b) =>
-        moment(b.settledAt, "DD MMM YYYY, HH:mm z").valueOf() -
-        moment(a.settledAt, "DD MMM YYYY, HH:mm z").valueOf()
-    );
+  console.timeEnd("sorting");
 
-    console.timeEnd("sorting");
-
-    return logs;
+  return logs;
 }
 
 async function addMessage(msg) {
-  const all = (await db.get('messages')) || [];
+  const all = (await db.get("messages")) || [];
   all.push(msg);
-  await db.set('messages', all);
+  await db.set("messages", all);
 }
 
 // OPTIMIZED: Get Messages
 async function getMessages() {
-    return await db.get("messages") || [];
+  return (await db.get("messages")) || [];
 }
 
 // OPTIMIZED: Update Bets
 async function updateBets(newBets) {
-    await db.set("bets", newBets);
+  await db.set("bets", newBets);
 }
 
 /* ---------------- SETTLEMENT ENGINE ---------------- */
@@ -645,7 +715,7 @@ async function settlePendingBets() {
   const summary = { settled: 0, errors: [], settledFixtureIds: [] };
 
   const allBets = await getBets();
-  const pendingBets = allBets.filter(b => b.status === 'PENDING');
+  const pendingBets = allBets.filter((b) => b.status === "PENDING");
   if (!pendingBets.length) return summary;
 
   // Fetch finished results from the Odds API scores endpoint (direct ID match)
@@ -653,196 +723,207 @@ async function settlePendingBets() {
   try {
     const oddsResults = await fetchResultsFromOddsApi();
     const count = Object.keys(oddsResults).length;
-    console.log(`[Settlement] Odds API scores returned ${count} completed fixture(s)`);
+    console.log(
+      `[Settlement] Odds API scores returned ${count} completed fixture(s)`,
+    );
     for (const bet of pendingBets) {
       if (resultMap[bet.fixtureId]) continue;
-      if (oddsResults[bet.fixtureId]) resultMap[bet.fixtureId] = oddsResults[bet.fixtureId];
+      if (oddsResults[bet.fixtureId])
+        resultMap[bet.fixtureId] = oddsResults[bet.fixtureId];
     }
   } catch (e) {
     summary.errors.push(`Odds API scores error: ${e.message}`);
-    console.error('[Settlement] Odds API scores error:', e.message);
+    console.error("[Settlement] Odds API scores error:", e.message);
   }
 
   // Group pending bets by fixture (only those with a known result)
   const byFixture = {};
   for (const bet of pendingBets) {
-    const result = resultMap[bet.fixtureId];
+    const matchResult = resultMap[bet.fixtureId];
+
+    if (!matchResult) continue;
+
+    const result = matchResult.result;
+
     if (!result) continue;
-    if (!byFixture[bet.fixtureId]) byFixture[bet.fixtureId] = { result, bets: [] };
+    if (!byFixture[bet.fixtureId]) {
+      byFixture[bet.fixtureId] = {
+        result,
+        homeGoals: matchResult.homeGoals,
+        awayGoals: matchResult.awayGoals,
+        bets: [],
+      };
+    }
     byFixture[bet.fixtureId].bets.push(bet);
   }
 
   let changed = false;
 
-for (const [fixtureId, fixtureData] of Object.entries(byFixture)) {
-
+  for (const [fixtureId, fixtureData] of Object.entries(byFixture)) {
     try {
+      const existingLog = await db.get(`settlementLog:${fixtureId}`);
 
-        const existingLog = await db.get(`settlementLog:${fixtureId}`);
+      if (existingLog) {
+        console.log(`[Settlement] ${fixtureId} already settled`);
+        continue;
+      }
 
-        if (existingLog) {
-            console.log(`[Settlement] ${fixtureId} already settled`);
-            continue;
-        }
+      const { result, bets } = fixtureData;
 
-        const { result, bets } = fixtureData;
+      const totalStaked = bets.reduce((sum, b) => sum + b.stake, 0);
 
-        const totalStaked = bets.reduce((sum, b) => sum + b.stake, 0);
+      const sumGross = bets.reduce((sum, b) => {
+        if (b.selection !== result) return sum;
 
-        const sumGross = bets.reduce(
-            (sum, b) =>
-                b.selection === result
-                    ? sum + b.stake * Number(b.lockedOdds)
-                    : sum,
-            0
+        const boosted =
+          Number(b.predictedHomeGoals) === fixtureData.homeGoals &&
+          Number(b.predictedAwayGoals) === fixtureData.awayGoals;
+
+        const odds = boosted ? Number(b.lockedOdds) + 1 : Number(b.lockedOdds);
+
+        return sum + b.stake * odds;
+      }, 0);
+
+      let totalWinnerPayout = 0;
+
+      const tranchePayout = bets.map((b) => {
+        if (b.selection !== result) return 0;
+
+        const exactScoreHit =
+          Number(b.predictedHomeGoals) === fixtureData.homeGoals &&
+          Number(b.predictedAwayGoals) === fixtureData.awayGoals;
+
+        b.scoreBoostApplied = exactScoreHit;
+
+        const effectiveOdds = exactScoreHit
+          ? Number(b.lockedOdds) + 1
+          : Number(b.lockedOdds);
+
+        b.finalOdds = effectiveOdds;
+
+        const gross = b.stake * effectiveOdds;
+
+        const payout = Math.min(
+          sumGross > 0 ? (gross / sumGross) * totalStaked : 0,
+          gross,
         );
 
-        let totalWinnerPayout = 0;
+        totalWinnerPayout += payout;
 
-        const tranchePayout = bets.map(b => {
+        return Math.round(payout * 10) / 10;
+      });
 
-            if (b.selection !== result)
-                return 0;
+      const undistributed =
+        Math.round((totalStaked - totalWinnerPayout) * 10) / 10;
 
-            const gross = b.stake * Number(b.lockedOdds);
+      const totalLoserStake = bets.reduce(
+        (sum, b) => (b.selection !== result ? sum + b.stake : sum),
+        0,
+      );
 
-            const payout = Math.min(
-                sumGross > 0
-                    ? (gross / sumGross) * totalStaked
-                    : 0,
-                gross
-            );
+      for (let i = 0; i < bets.length; i++) {
+        if (bets[i].selection === result) continue;
 
-            totalWinnerPayout += payout;
+        tranchePayout[i] =
+          totalLoserStake > 0
+            ? Math.round(
+                undistributed * (bets[i].stake / totalLoserStake) * 10,
+              ) / 10
+            : 0;
+      }
 
-            return Math.round(payout * 10) / 10;
+      const userNetMap = {};
 
-        });
+      for (let i = 0; i < bets.length; i++) {
+        bets[i].status = bets[i].selection === result ? "WON" : "LOST";
 
-        const undistributed =
-            Math.round((totalStaked - totalWinnerPayout) * 10) / 10;
+        bets[i].result = result;
 
-        const totalLoserStake = bets.reduce(
-            (sum, b) =>
-                b.selection !== result
-                    ? sum + b.stake
-                    : sum,
-            0
-        );
+        bets[i].netPoints =
+          Math.round((tranchePayout[i] - bets[i].stake) * 10) / 10;
 
-        for (let i = 0; i < bets.length; i++) {
+        userNetMap[bets[i].user] =
+          Math.round(
+            ((userNetMap[bets[i].user] || 0) + bets[i].netPoints) * 10,
+          ) / 10;
+      }
 
-            if (bets[i].selection === result)
-                continue;
+      // Persist updated bets FIRST
+      changed = true;
 
-            tranchePayout[i] =
-                totalLoserStake > 0
-                    ? Math.round(
-                        undistributed *
-                        (bets[i].stake / totalLoserStake) *
-                        10
-                    ) / 10
-                    : 0;
+      // Update users
+      for (const [userId, netPoints] of Object.entries(userNetMap)) {
+        const user = await getUserById(userId);
 
-        }
+        if (!user) continue;
 
-        const userNetMap = {};
+        user.totalNetPoints =
+          Math.round((user.totalNetPoints + netPoints) * 10) / 10;
 
-        for (let i = 0; i < bets.length; i++) {
+        await saveUser(user);
+      }
 
-            bets[i].status =
-                bets[i].selection === result
-                    ? "WON"
-                    : "LOST";
+      // Save settlement log LAST
+      const firstBet = bets[0];
 
-            bets[i].result = result;
+      await db.set(`settlementLog:${fixtureId}`, {
+        fixtureId,
+        homeTeam: firstBet.homeTeam,
+        awayTeam: firstBet.awayTeam,
+        leagueName: firstBet.leagueName,
+        result,
+        totalStaked,
 
-            bets[i].netPoints =
-                Math.round((tranchePayout[i] - bets[i].stake) * 10) / 10;
+        settledAt: moment().tz(TIMEZONE).format("DD MMM YYYY, HH:mm z"),
 
-            userNetMap[bets[i].user] =
-                Math.round(
-                    ((userNetMap[bets[i].user] || 0) + bets[i].netPoints) * 10
-                ) / 10;
+        entries: bets.map((bet, i) => ({
+          user: bet.user,
+          selection: bet.selection,
+          stake: bet.stake,
 
-        }
+          // Original odds at bet placement
+          lockedOdds: bet.lockedOdds,
 
-        // Persist updated bets FIRST
-        changed = true;
+          // Odds actually used during settlement
+          finalOdds: bet.finalOdds ?? bet.lockedOdds,
 
-        // Update users
-        for (const [userId, netPoints] of Object.entries(userNetMap)) {
+          // Score prediction
+          predictedHomeGoals: bet.predictedHomeGoals ?? null,
+          predictedAwayGoals: bet.predictedAwayGoals ?? null,
 
-            const user = await getUserById(userId);
+          // Exact score bonus
+          scoreBoostApplied: bet.scoreBoostApplied ?? false,
 
-            if (!user)
-                continue;
+          status: bet.status,
+          finalPayout: tranchePayout[i],
+          netPoints: bet.netPoints,
 
-            user.totalNetPoints =
-                Math.round((user.totalNetPoints + netPoints) * 10) / 10;
+          // Useful for future analytics
+          settledResult: result,
+        })),
+      });
 
-            await saveUser(user);
+      summary.settled += bets.length;
+      summary.settledFixtureIds.push(fixtureId);
 
-        }
+      console.log(`[Settlement] ${fixtureId} settled (${bets.length} bets)`);
+    } catch (err) {
+      console.error(`[Settlement] ${fixtureId}`, err);
 
-        // Save settlement log LAST
-        const firstBet = bets[0];
-
-        await db.set(`settlementLog:${fixtureId}`, {
-
-            fixtureId,
-            homeTeam: firstBet.homeTeam,
-            awayTeam: firstBet.awayTeam,
-            leagueName: firstBet.leagueName,
-            result,
-            totalStaked,
-
-            settledAt: moment()
-                .tz(TIMEZONE)
-                .format("DD MMM YYYY, HH:mm z"),
-
-            entries: bets.map((bet, i) => ({
-                user: bet.user,
-                selection: bet.selection,
-                stake: bet.stake,
-                lockedOdds: bet.lockedOdds,
-                status: bet.status,
-                finalPayout: tranchePayout[i],
-                netPoints: bet.netPoints
-            }))
-
-        });
-
-        summary.settled += bets.length;
-        summary.settledFixtureIds.push(fixtureId);
-
-        console.log(
-            `[Settlement] ${fixtureId} settled (${bets.length} bets)`
-        );
-
+      summary.errors.push(err.message);
     }
-    catch (err) {
+  }
 
-        console.error(`[Settlement] ${fixtureId}`, err);
-
-        summary.errors.push(err.message);
-
-    }
-
-}
-
-// Persist updated bets once
-if (changed) {
-
+  // Persist updated bets once
+  if (changed) {
     console.log("[Settlement] Persisting updated bets...");
 
     await updateBets(allBets);
 
     console.log("[Settlement] Bets saved successfully.");
+  }
 
-}
-
-return summary;
+  return summary;
 }
 
 // Settlement is triggered exclusively by the daily job at 12 noon IST.
@@ -913,12 +994,12 @@ function htmlFooter(active) {
   return `
     </div>
     <div class="nav">
-      <a href="/" class="${active === 'home' ? 'active' : ''}">Home</a>
-      <a href="/summary" class="${active === 'summary' ? 'active' : ''}">My Stats</a>
-      <a href="/rules" class="${active === 'rules' ? 'active' : ''}">Rules</a>
-      <a href="/results" class="${active === 'results' ? 'active' : ''}">Results</a>
-      <a href="/forum" class="${active === 'forum' ? 'active' : ''}">Forum</a>
-      <a href="/admin" class="${active === 'admin' ? 'active' : ''}">Admin</a>
+      <a href="/" class="${active === "home" ? "active" : ""}">Home</a>
+      <a href="/summary" class="${active === "summary" ? "active" : ""}">My Stats</a>
+      <a href="/rules" class="${active === "rules" ? "active" : ""}">Rules</a>
+      <a href="/results" class="${active === "results" ? "active" : ""}">Results</a>
+      <a href="/forum" class="${active === "forum" ? "active" : ""}">Forum</a>
+      <a href="/admin" class="${active === "admin" ? "active" : ""}">Admin</a>
     </div>
   </body>
   </html>
@@ -928,13 +1009,13 @@ function htmlFooter(active) {
 /* ---------------- AUTH ROUTES ---------------- */
 
 // REGISTER – step 1: collect details, send OTP
-app.get('/register', (req, res) => {
-  if (req.session.userId) return res.redirect('/');
-  const err = req.query.error || '';
-  let html = htmlHeader('Register - No Betting Zone');
+app.get("/register", (req, res) => {
+  if (req.session.userId) return res.redirect("/");
+  const err = req.query.error || "";
+  let html = htmlHeader("Register - No Betting Zone");
   html += `
     <h2>Create Account</h2>
-    ${err ? `<p style="color:#ef4444;font-size:13px;">${err}</p>` : ''}
+    ${err ? `<p style="color:#ef4444;font-size:13px;">${err}</p>` : ""}
     <form method="POST" action="/register">
       <p style="margin-bottom:4px;font-size:13px;">Username</p>
       <input name="userId" placeholder="e.g. Rahul07" required autocomplete="username"
@@ -949,51 +1030,64 @@ app.get('/register', (req, res) => {
     </form>
     <p style="font-size:13px;margin-top:16px;">Already have an account? <a href="/login">Log in</a></p>
   `;
-  html += htmlFooter('');
+  html += htmlFooter("");
   res.send(html);
 });
 
-app.post('/register', async (req, res) => {
-  if (req.session.userId) return res.redirect('/');
+app.post("/register", async (req, res) => {
+  if (req.session.userId) return res.redirect("/");
   const { userId, email, password } = req.body || {};
 
-  if (!userId || !email || !password) return res.redirect('/register?error=All+fields+are+required.');
-  if (userId.length < 3 || userId.length > 20) return res.redirect('/register?error=Username+must+be+3-20+characters.');
-  if (!/^[a-zA-Z0-9_]+$/.test(userId)) return res.redirect('/register?error=Username+can+only+contain+letters,+numbers,+and+underscores.');
-  if (password.length < 6) return res.redirect('/register?error=Password+must+be+at+least+6+characters.');
+  if (!userId || !email || !password)
+    return res.redirect("/register?error=All+fields+are+required.");
+  if (userId.length < 3 || userId.length > 20)
+    return res.redirect("/register?error=Username+must+be+3-20+characters.");
+  if (!/^[a-zA-Z0-9_]+$/.test(userId))
+    return res.redirect(
+      "/register?error=Username+can+only+contain+letters,+numbers,+and+underscores.",
+    );
+  if (password.length < 6)
+    return res.redirect(
+      "/register?error=Password+must+be+at+least+6+characters.",
+    );
 
   try {
     const existingByUserId = await getUserById(userId);
-    if (existingByUserId) return res.redirect('/register?error=Username+already+taken.');
+    if (existingByUserId)
+      return res.redirect("/register?error=Username+already+taken.");
     const existingByEmail = await getUserByEmail(email);
-    if (existingByEmail) return res.redirect('/register?error=Email+already+registered.');
+    if (existingByEmail)
+      return res.redirect("/register?error=Email+already+registered.");
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const passwordHash = await bcrypt.hash(password, 10);
     await db.set(`otp:${email.toLowerCase()}`, {
-      otp, userId, email, passwordHash,
-      expiresAt: Date.now() + 15 * 60 * 1000
+      otp,
+      userId,
+      email,
+      passwordHash,
+      expiresAt: Date.now() + 15 * 60 * 1000,
     });
 
     await resend.emails.send({
-      from: 'No Betting Zone <onboarding@resend.dev>',
-      to: 'gletterdash@gmail.com',
+      from: "No Betting Zone <onboarding@resend.dev>",
+      to: "gletterdash@gmail.com",
       subject: `OTP for new user: ${userId}`,
-      html: `<p>New registration request:</p><ul><li><strong>Username:</strong> ${userId}</li><li><strong>Email:</strong> ${email}</li><li><strong>OTP:</strong> <span style="font-size:20px;letter-spacing:4px;font-weight:bold;">${otp}</span></li></ul><p>This code expires in 15 minutes.</p>`
+      html: `<p>New registration request:</p><ul><li><strong>Username:</strong> ${userId}</li><li><strong>Email:</strong> ${email}</li><li><strong>OTP:</strong> <span style="font-size:20px;letter-spacing:4px;font-weight:bold;">${otp}</span></li></ul><p>This code expires in 15 minutes.</p>`,
     });
 
     res.redirect(`/register-otp-info?email=${encodeURIComponent(email)}`);
   } catch (e) {
-    console.error('[Register]', e.message);
-    res.redirect('/register?error=Something+went+wrong.+Please+try+again.');
+    console.error("[Register]", e.message);
+    res.redirect("/register?error=Something+went+wrong.+Please+try+again.");
   }
 });
 
 // REGISTER OTP INFO – shown after registration form, before OTP entry
-app.get('/register-otp-info', (req, res) => {
-  if (req.session.userId) return res.redirect('/');
-  const email = req.query.email || '';
-  let html = htmlHeader('Almost there! - No Betting Zone');
+app.get("/register-otp-info", (req, res) => {
+  if (req.session.userId) return res.redirect("/");
+  const email = req.query.email || "";
+  let html = htmlHeader("Almost there! - No Betting Zone");
   html += `
     <h2>One more step!</h2>
     <div class="card" style="text-align:center;padding:24px 16px;">
@@ -1006,19 +1100,19 @@ app.get('/register-otp-info', (req, res) => {
       I have my OTP →
     </a>
   `;
-  html += htmlFooter('');
+  html += htmlFooter("");
   res.send(html);
 });
 
 // VERIFY EMAIL – step 2: enter OTP
-app.get('/verify-email', (req, res) => {
-  const email = req.query.email || '';
-  const err = req.query.error || '';
-  let html = htmlHeader('Verify Email - No Betting Zone');
+app.get("/verify-email", (req, res) => {
+  const email = req.query.email || "";
+  const err = req.query.error || "";
+  let html = htmlHeader("Verify Email - No Betting Zone");
   html += `
     <h2>Verify Your Email</h2>
     <p style="font-size:13px;color:#9ca3af;">We sent a 6-digit code to <strong style="color:#e5e7eb;">${email}</strong></p>
-    ${err ? `<p style="color:#ef4444;font-size:13px;">${err}</p>` : ''}
+    ${err ? `<p style="color:#ef4444;font-size:13px;">${err}</p>` : ""}
     <form method="POST" action="/verify-email">
       <input type="hidden" name="email" value="${email}">
       <p style="margin-bottom:4px;font-size:13px;">Enter OTP</p>
@@ -1030,41 +1124,52 @@ app.get('/verify-email', (req, res) => {
       Didn't get it? <a href="/register">Start over</a>
     </p>
   `;
-  html += htmlFooter('');
+  html += htmlFooter("");
   res.send(html);
 });
 
-app.post('/verify-email', async (req, res) => {
+app.post("/verify-email", async (req, res) => {
   const { email, otp } = req.body || {};
-  if (!email || !otp) return res.redirect('/register');
+  if (!email || !otp) return res.redirect("/register");
 
   const pending = await db.get(`otp:${email.toLowerCase()}`);
-  if (!pending) return res.redirect(`/verify-email?email=${encodeURIComponent(email)}&error=OTP+expired.+Please+register+again.`);
+  if (!pending)
+    return res.redirect(
+      `/verify-email?email=${encodeURIComponent(email)}&error=OTP+expired.+Please+register+again.`,
+    );
   if (Date.now() > pending.expiresAt) {
     await db.delete(`otp:${email.toLowerCase()}`);
-    return res.redirect(`/verify-email?email=${encodeURIComponent(email)}&error=OTP+expired.+Please+register+again.`);
+    return res.redirect(
+      `/verify-email?email=${encodeURIComponent(email)}&error=OTP+expired.+Please+register+again.`,
+    );
   }
   if (otp.trim() !== pending.otp) {
-    return res.redirect(`/verify-email?email=${encodeURIComponent(email)}&error=Incorrect+OTP.+Please+try+again.`);
+    return res.redirect(
+      `/verify-email?email=${encodeURIComponent(email)}&error=Incorrect+OTP.+Please+try+again.`,
+    );
   }
 
   await db.delete(`otp:${email.toLowerCase()}`);
-  const user = await createUser(pending.userId, pending.email, pending.passwordHash);
+  const user = await createUser(
+    pending.userId,
+    pending.email,
+    pending.passwordHash,
+  );
   req.session.userId = user.userId;
   req.session.displayName = user.displayName;
-  res.redirect('/');
+  res.redirect("/");
 });
 
 // LOGIN
-app.get('/login', (req, res) => {
-  if (req.session.userId) return res.redirect('/');
-  const err = req.query.error || '';
-  const msg = req.query.msg || '';
-  let html = htmlHeader('Login - No Betting Zone');
+app.get("/login", (req, res) => {
+  if (req.session.userId) return res.redirect("/");
+  const err = req.query.error || "";
+  const msg = req.query.msg || "";
+  let html = htmlHeader("Login - No Betting Zone");
   html += `
     <h2>Log In</h2>
-    ${err ? `<p style="color:#ef4444;font-size:13px;">${err}</p>` : ''}
-    ${msg ? `<p style="color:#22c55e;font-size:13px;">${msg}</p>` : ''}
+    ${err ? `<p style="color:#ef4444;font-size:13px;">${err}</p>` : ""}
+    ${msg ? `<p style="color:#22c55e;font-size:13px;">${msg}</p>` : ""}
     <form method="POST" action="/login">
       <p style="margin-bottom:4px;font-size:13px;">Email</p>
       <input name="email" type="email" placeholder="you@example.com" required autocomplete="email"
@@ -1077,41 +1182,42 @@ app.get('/login', (req, res) => {
     <p style="font-size:13px;margin-top:12px;"><a href="/forgot-password">Forgot password?</a></p>
     <p style="font-size:13px;margin-top:8px;">No account? <a href="/register">Register</a></p>
   `;
-  html += htmlFooter('');
+  html += htmlFooter("");
   res.send(html);
 });
 
-app.post('/login', async (req, res) => {
+app.post("/login", async (req, res) => {
   const { email, password } = req.body || {};
-  if (!email || !password) return res.redirect('/login?error=Please+fill+in+all+fields.');
+  if (!email || !password)
+    return res.redirect("/login?error=Please+fill+in+all+fields.");
   try {
     const user = await getUserByEmail(email);
     if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
-      return res.redirect('/login?error=Invalid+email+or+password.');
+      return res.redirect("/login?error=Invalid+email+or+password.");
     }
     req.session.userId = user.userId;
     req.session.displayName = user.displayName;
-    res.redirect('/');
+    res.redirect("/");
   } catch (e) {
-    console.error('[Login]', e.message);
-    res.redirect('/login?error=Something+went+wrong.');
+    console.error("[Login]", e.message);
+    res.redirect("/login?error=Something+went+wrong.");
   }
 });
 
 // LOGOUT
-app.get('/logout', (req, res) => {
-  req.session.destroy(() => res.redirect('/login'));
+app.get("/logout", (req, res) => {
+  req.session.destroy(() => res.redirect("/login"));
 });
 
 // FORGOT PASSWORD – step 1: enter registered email
-app.get('/forgot-password', (req, res) => {
-  if (req.session.userId) return res.redirect('/');
-  const err = req.query.error || '';
-  let html = htmlHeader('Forgot Password - No Betting Zone');
+app.get("/forgot-password", (req, res) => {
+  if (req.session.userId) return res.redirect("/");
+  const err = req.query.error || "";
+  let html = htmlHeader("Forgot Password - No Betting Zone");
   html += `
     <h2>Reset Password</h2>
     <p style="font-size:13px;color:#9ca3af;margin-bottom:16px;">Enter the email address you registered with. An OTP will be sent to the admin who will share it with you.</p>
-    ${err ? `<p style="color:#ef4444;font-size:13px;">${err}</p>` : ''}
+    ${err ? `<p style="color:#ef4444;font-size:13px;">${err}</p>` : ""}
     <form method="POST" action="/forgot-password">
       <p style="margin-bottom:4px;font-size:13px;">Registered Email</p>
       <input name="email" type="email" placeholder="you@example.com" required autocomplete="email"
@@ -1120,68 +1226,73 @@ app.get('/forgot-password', (req, res) => {
     </form>
     <p style="font-size:13px;margin-top:16px;"><a href="/login">← Back to Login</a></p>
   `;
-  html += htmlFooter('');
+  html += htmlFooter("");
   res.send(html);
 });
 
-app.post('/forgot-password', async (req, res) => {
-  if (req.session.userId) return res.redirect('/');
+app.post("/forgot-password", async (req, res) => {
+  if (req.session.userId) return res.redirect("/");
   const { email } = req.body || {};
-  if (!email) return res.redirect('/forgot-password?error=Please+enter+your+email.');
+  if (!email)
+    return res.redirect("/forgot-password?error=Please+enter+your+email.");
   try {
+    console.log("1. Forgot password request received");
 
-      console.log("1. Forgot password request received");
+    const email = (req.body.email || "").trim().toLowerCase();
+    console.log("2. Email:", email);
 
-      const email = (req.body.email || "").trim().toLowerCase();
-      console.log("2. Email:", email);
+    const mappedUsername = await db.get(`email:${email}`);
+    console.log("3. Mapped Username:", mappedUsername);
 
-      const username = await db.get(`email:${email}`);
-      console.log("3. Username:", username);
+    if (!mappedUsername) {
+      throw new Error("No account found for this email");
+    }
 
-      const user = await getUserById(username);
-      console.log("4. User:", user);
+    const user = await getUserById(mappedUsername);
 
-      const otp = Math.floor(100000 + Math.random() * 900000).toString();
-      console.log("5. OTP generated:", otp);
+    console.log("4. User:", user);
 
-      await db.set(`reset-otp:${email}`, {
-          otp,
-          userId: user.userId,
-          email,
-          expiresAt: Date.now() + 15 * 60 * 1000
-      });
-      console.log("6. OTP saved");
+    if (!user) {
+      throw new Error(`User record missing for ${mappedUsername}`);
+    }
 
-    // const user = await getUserByEmail(email);
-    // if (!user) return res.redirect('/forgot-password?error=No+account+found+with+that+email.');
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    console.log("5. OTP generated:", otp);
 
-    // const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    // await db.set(`reset-otp:${email.toLowerCase()}`, {
-    //   otp, userId: user.userId, email,
-    //   expiresAt: Date.now() + 15 * 60 * 1000
-    // });
+    await db.set(`reset-otp:${email}`, {
+      otp,
+      userId: user.userId,
+      email,
+      expiresAt: Date.now() + 15 * 60 * 1000,
+    });
+
+    console.log("6. OTP saved");
 
     await resend.emails.send({
-      from: 'No Betting Zone <onboarding@resend.dev>',
-      to: 'gletterdash@gmail.com',
+      from: "No Betting Zone <onboarding@resend.dev>",
+      to: "gletterdash@gmail.com",
       subject: `Password Reset OTP for: ${user.userId}`,
-      html: `<p>Password reset request:</p><ul><li><strong>Username:</strong> ${user.userId}</li><li><strong>Email:</strong> ${email}</li><li><strong>OTP:</strong> <span style="font-size:20px;letter-spacing:4px;font-weight:bold;">${otp}</span></li></ul><p>This code expires in 15 minutes.</p>`
+      html: `<p>Password reset request:</p><ul><li><strong>Username:</strong> ${user.userId}</li><li><strong>Email:</strong> ${email}</li><li><strong>OTP:</strong> <span style="font-size:20px;letter-spacing:4px;font-weight:bold;">${otp}</span></li></ul><p>This code expires in 15 minutes.</p>`,
     });
 
     // return res.send("OTP saved successfully");
 
-    res.redirect(`/forgot-password-otp-info?email=${encodeURIComponent(email)}`);
+    res.redirect(
+      `/forgot-password-otp-info?email=${encodeURIComponent(email)}`,
+    );
   } catch (e) {
-    console.error('[ForgotPassword]', e.message);
-    res.redirect('/forgot-password?error=Something+went+wrong.+Please+try+again.');
+    console.error("[ForgotPassword]", e.message);
+    res.redirect(
+      "/forgot-password?error=Something+went+wrong.+Please+try+again.",
+    );
   }
 });
 
 // FORGOT PASSWORD OTP INFO – contact admin page
-app.get('/forgot-password-otp-info', (req, res) => {
-  if (req.session.userId) return res.redirect('/');
-  const email = req.query.email || '';
-  let html = htmlHeader('Check with Admin - No Betting Zone');
+app.get("/forgot-password-otp-info", (req, res) => {
+  if (req.session.userId) return res.redirect("/");
+  const email = req.query.email || "";
+  let html = htmlHeader("Check with Admin - No Betting Zone");
   html += `
     <h2>Almost there!</h2>
     <div class="card" style="text-align:center;padding:24px 16px;">
@@ -1194,19 +1305,19 @@ app.get('/forgot-password-otp-info', (req, res) => {
       I have my OTP →
     </a>
   `;
-  html += htmlFooter('');
+  html += htmlFooter("");
   res.send(html);
 });
 
 // RESET PASSWORD – enter OTP + new password
-app.get('/reset-password', (req, res) => {
-  if (req.session.userId) return res.redirect('/');
-  const email = req.query.email || '';
-  const err = req.query.error || '';
-  let html = htmlHeader('Reset Password - No Betting Zone');
+app.get("/reset-password", (req, res) => {
+  if (req.session.userId) return res.redirect("/");
+  const email = req.query.email || "";
+  const err = req.query.error || "";
+  let html = htmlHeader("Reset Password - No Betting Zone");
   html += `
     <h2>Set New Password</h2>
-    ${err ? `<p style="color:#ef4444;font-size:13px;">${err}</p>` : ''}
+    ${err ? `<p style="color:#ef4444;font-size:13px;">${err}</p>` : ""}
     <form method="POST" action="/reset-password">
       <input type="hidden" name="email" value="${email}">
       <p style="margin-bottom:4px;font-size:13px;">OTP Code</p>
@@ -1221,25 +1332,28 @@ app.get('/reset-password', (req, res) => {
       <button type="submit" style="width:100%;">Reset Password</button>
     </form>
   `;
-  html += htmlFooter('');
+  html += htmlFooter("");
   res.send(html);
 });
 
-app.post('/reset-password', async (req, res) => {
-  if (req.session.userId) return res.redirect('/');
+app.post("/reset-password", async (req, res) => {
+  if (req.session.userId) return res.redirect("/");
   const { email, otp, password, confirmPassword } = req.body || {};
-  const errBase = `/reset-password?email=${encodeURIComponent(email || '')}`;
+  const errBase = `/reset-password?email=${encodeURIComponent(email || "")}`;
 
   if (!email || !otp || !password || !confirmPassword)
     return res.redirect(`${errBase}&error=All+fields+are+required.`);
   if (password !== confirmPassword)
     return res.redirect(`${errBase}&error=Passwords+do+not+match.`);
   if (password.length < 6)
-    return res.redirect(`${errBase}&error=Password+must+be+at+least+6+characters.`);
+    return res.redirect(
+      `${errBase}&error=Password+must+be+at+least+6+characters.`,
+    );
 
   try {
     const pending = await db.get(`reset-otp:${email.toLowerCase()}`);
-    if (!pending) return res.redirect(`${errBase}&error=OTP+expired.+Please+start+over.`);
+    if (!pending)
+      return res.redirect(`${errBase}&error=OTP+expired.+Please+start+over.`);
     if (Date.now() > pending.expiresAt) {
       await db.delete(`reset-otp:${email.toLowerCase()}`);
       return res.redirect(`${errBase}&error=OTP+expired.+Please+start+over.`);
@@ -1249,13 +1363,14 @@ app.post('/reset-password', async (req, res) => {
 
     const newHash = await bcrypt.hash(password, 10);
     const user = await getUserByEmail(email);
+    // console.log(user);
     user.passwordHash = newHash;
     await db.set(`user:${user.userId.toLowerCase()}`, user);
     await db.delete(`reset-otp:${email.toLowerCase()}`);
 
-    res.redirect('/login?msg=Password+reset+successfully.+Please+log+in.');
+    res.redirect("/login?msg=Password+reset+successfully.+Please+log+in.");
   } catch (e) {
-    console.error('[ResetPassword]', e.message);
+    console.error("[ResetPassword]", e.message);
     res.redirect(`${errBase}&error=Something+went+wrong.+Please+try+again.`);
   }
 });
@@ -1263,17 +1378,16 @@ app.post('/reset-password', async (req, res) => {
 /* ---------------- ROUTES ---------------- */
 
 // EDIT USERNAME – GET
-app.get('/edit-username', requireAuth, async (req, res) => {  
+app.get("/edit-username", requireAuth, async (req, res) => {
   const user = await getUserById(req.session.userId);
 
-  if (!user)
-      return res.redirect('/login');
-  
-  const err = req.query.error || '';
-  let html = htmlHeader('Edit Username - No Betting Zone');
-  
+  if (!user) return res.redirect("/login");
+
+  const err = req.query.error || "";
+  let html = htmlHeader("Edit Username - No Betting Zone");
+
   html += `<h2>Change Username</h2>`;
-  
+
   // Enforce the "Only Once" rule
   if (user.usernameChanged) {
     html += `
@@ -1286,7 +1400,7 @@ app.get('/edit-username', requireAuth, async (req, res) => {
   } else {
     html += `
       <p style="font-size:13px;color:#9ca3af;margin-bottom:16px;">You can only change your username <strong>ONCE</strong>. Choose carefully!</p>
-      ${err ? `<p style="color:#ef4444;font-size:13px;">${err}</p>` : ''}
+      ${err ? `<p style="color:#ef4444;font-size:13px;">${err}</p>` : ""}
       
       <form method="POST" action="/edit-username" onsubmit="disableMigrationButton()"">
         <p style="margin-bottom:4px;font-size:13px;">New Username</p>
@@ -1312,249 +1426,213 @@ function disableMigrationButton() {
       <p style="margin-top:16px;"><a href="/summary">← Back to My Stats</a></p>
     `;
   }
-  
-  html += htmlFooter('summary');
+
+  html += htmlFooter("summary");
   res.send(html);
 });
 
 async function migrateUsername(oldUsername, newUsername) {
+  oldUsername = oldUsername.trim();
+  newUsername = newUsername.trim();
 
-    oldUsername = oldUsername.trim();
-    newUsername = newUsername.trim();
+  const lockKey = `migration:${oldUsername.toLowerCase()}`;
 
-    const lockKey = `migration:${oldUsername.toLowerCase()}`;
+  if (await db.get(lockKey)) {
+    throw new Error("Username migration already in progress. Please wait.");
+  }
 
-    if (await db.get(lockKey)) {
-        throw new Error("Username migration already in progress. Please wait.");
+  await db.set(lockKey, {
+    startedAt: Date.now(),
+  });
+
+  try {
+    const user = await getUserById(oldUsername);
+
+    if (!user) throw new Error(`User ${oldUsername} not found`);
+
+    if (await getUserById(newUsername))
+      throw new Error(`Username ${newUsername} already exists`);
+
+    console.log(`[Migration] ${oldUsername} -> ${newUsername}`);
+
+    // ---------- Create new user ----------
+
+    const newUser = {
+      ...user,
+      userId: newUsername,
+      displayName: newUsername,
+      usernameChanged: true,
+    };
+
+    await db.set(`user:${newUsername.toLowerCase()}`, newUser);
+
+    // ---------- Bets ----------
+
+    const bets = await getBets();
+
+    let migratedBets = 0;
+
+    for (const bet of bets) {
+      if ((bet.user || "").toLowerCase() === oldUsername.toLowerCase()) {
+        bet.user = newUsername;
+        migratedBets++;
+      }
     }
 
-    await db.set(lockKey, {
-        startedAt: Date.now()
-    });
+    await updateBets(bets);
 
-    try {
+    // ---------- Messages ----------
 
-        const user = await getUserById(oldUsername);
+    const messages = await getMessages();
 
-        if (!user)
-            throw new Error(`User ${oldUsername} not found`);
+    let migratedMessages = 0;
 
-        if (await getUserById(newUsername))
-            throw new Error(`Username ${newUsername} already exists`);
-
-        console.log(`[Migration] ${oldUsername} -> ${newUsername}`);
-
-        // ---------- Create new user ----------
-
-        const newUser = {
-            ...user,
-            userId: newUsername,
-            displayName: newUsername,
-            usernameChanged: true
-        };
-
-        await db.set(`user:${newUsername.toLowerCase()}`, newUser);
-
-        // ---------- Bets ----------
-
-        const bets = await getBets();
-
-        let migratedBets = 0;
-
-        for (const bet of bets) {
-
-            if ((bet.user || "").toLowerCase() === oldUsername.toLowerCase()) {
-                bet.user = newUsername;
-                migratedBets++;
-            }
-
-        }
-
-        await updateBets(bets);
-
-        // ---------- Messages ----------
-
-        const messages = await getMessages();
-
-        let migratedMessages = 0;
-
-        for (const msg of messages) {
-
-            if ((msg.name || "").toLowerCase() === oldUsername.toLowerCase()) {
-                msg.name = newUsername;
-                migratedMessages++;
-            }
-
-        }
-
-        await db.set("messages", messages);
-
-        // ---------- Settlement Logs ----------
-
-        const logKeys = await db.list("settlementLog:");
-
-        let migratedLogs = 0;
-
-        for (const key of logKeys) {
-
-            const log = await db.get(key);
-
-            if (!log || !log.entries)
-                continue;
-
-            let changed = false;
-
-            for (const entry of log.entries) {
-
-                if ((entry.user || "").toLowerCase() === oldUsername.toLowerCase()) {
-
-                    entry.user = newUsername;
-                    migratedLogs++;
-                    changed = true;
-
-                }
-
-            }
-
-            if (changed)
-                await db.set(key, log);
-
-        }
-
-        // ---------- Verification ----------
-
-        const remainingBets = (await getBets())
-            .filter(b => (b.user || "").toLowerCase() === oldUsername.toLowerCase());
-
-        if (remainingBets.length > 0)
-            throw new Error(`Migration verification failed. ${remainingBets.length} bets still reference ${oldUsername}.`);
-
-        let remainingLogs = 0;
-
-        for (const key of logKeys) {
-
-            const log = await db.get(key);
-
-            if (!log || !log.entries)
-                continue;
-
-            remainingLogs += log.entries.filter(
-                e => (e.user || "").toLowerCase() === oldUsername.toLowerCase()
-            ).length;
-
-        }
-
-        if (remainingLogs > 0)
-            throw new Error(`Migration verification failed. ${remainingLogs} settlement entries still reference ${oldUsername}.`);
-
-        // ---------- Email Mapping ----------
-
-        await db.set(
-            `email:${user.email.toLowerCase()}`,
-            newUsername
-        );
-
-        // ---------- Delete Old User ----------
-
-        await db.delete(`user:${oldUsername.toLowerCase()}`);
-
-        console.log(`[Migration Complete] ${oldUsername} -> ${newUsername}`);
-
-        return {
-            migratedBets,
-            migratedMessages,
-            migratedLogs
-        };
-
-    } finally {
-
-        await db.delete(lockKey);
-
+    for (const msg of messages) {
+      if ((msg.name || "").toLowerCase() === oldUsername.toLowerCase()) {
+        msg.name = newUsername;
+        migratedMessages++;
+      }
     }
 
+    await db.set("messages", messages);
+
+    // ---------- Settlement Logs ----------
+
+    const logKeys = await db.list("settlementLog:");
+
+    let migratedLogs = 0;
+
+    for (const key of logKeys) {
+      const log = await db.get(key);
+
+      if (!log || !log.entries) continue;
+
+      let changed = false;
+
+      for (const entry of log.entries) {
+        if ((entry.user || "").toLowerCase() === oldUsername.toLowerCase()) {
+          entry.user = newUsername;
+          migratedLogs++;
+          changed = true;
+        }
+      }
+
+      if (changed) await db.set(key, log);
+    }
+
+    // ---------- Verification ----------
+
+    const remainingBets = (await getBets()).filter(
+      (b) => (b.user || "").toLowerCase() === oldUsername.toLowerCase(),
+    );
+
+    if (remainingBets.length > 0)
+      throw new Error(
+        `Migration verification failed. ${remainingBets.length} bets still reference ${oldUsername}.`,
+      );
+
+    let remainingLogs = 0;
+
+    for (const key of logKeys) {
+      const log = await db.get(key);
+
+      if (!log || !log.entries) continue;
+
+      remainingLogs += log.entries.filter(
+        (e) => (e.user || "").toLowerCase() === oldUsername.toLowerCase(),
+      ).length;
+    }
+
+    if (remainingLogs > 0)
+      throw new Error(
+        `Migration verification failed. ${remainingLogs} settlement entries still reference ${oldUsername}.`,
+      );
+
+    // ---------- Email Mapping ----------
+
+    await db.set(`email:${user.email.toLowerCase()}`, newUsername);
+
+    // ---------- Delete Old User ----------
+
+    await db.delete(`user:${oldUsername.toLowerCase()}`);
+
+    console.log(`[Migration Complete] ${oldUsername} -> ${newUsername}`);
+
+    return {
+      migratedBets,
+      migratedMessages,
+      migratedLogs,
+    };
+  } finally {
+    await db.delete(lockKey);
+  }
 }
 
 async function getCurrentUser(req) {
+  if (!req.session.email) return null;
 
-    if (!req.session.email)
-        return null;
+  const currentUsername = await db.get(
+    `email:${req.session.email.toLowerCase()}`,
+  );
 
-    const currentUsername = await db.get(
-        `email:${req.session.email.toLowerCase()}`
-    );
+  if (!currentUsername) return null;
 
-    if (!currentUsername)
-        return null;
-
-    return await getUserById(currentUsername);
-
+  return await getUserById(currentUsername);
 }
 
 // EDIT USERNAME – POST (The Migration Engine)
 // EDIT USERNAME – POST (The Migration Engine - Async)
-app.post('/edit-username', requireAuth, async (req, res) => {
+app.post("/edit-username", requireAuth, async (req, res) => {
+  try {
+    const oldUsername = req.session.userId;
+    const newUsername = (req.body.newUsername || "").trim();
 
-    try {
+    // validation...
 
-        const oldUsername = req.session.userId;
-        const newUsername = (req.body.newUsername || "").trim();
+    const stats = await migrateUsername(oldUsername, newUsername);
 
-        // validation...
+    req.session.userId = newUsername;
+    req.session.displayName = newUsername;
 
-        const stats = await migrateUsername(
-            oldUsername,
-            newUsername
-        );
+    req.session.save((err) => {
+      if (err) return res.redirect("/login");
 
-        req.session.userId = newUsername;
-        req.session.displayName = newUsername;
+      console.log(stats);
 
-        req.session.save(err => {
+      res.redirect("/summary");
+    });
+  } catch (err) {
+    console.error(err);
 
-            if (err)
-                return res.redirect('/login');
-
-            console.log(stats);
-
-            res.redirect('/summary');
-
-        });
-
-    }
-    catch (err) {
-
-        console.error(err);
-
-        res.redirect('/edit-username?error=' + encodeURIComponent(err.message));
-
-    }
-
+    res.redirect("/edit-username?error=" + encodeURIComponent(err.message));
+  }
 });
 
-
 // HOME / DASHBOARD – reads from in-memory snapshot only, no API calls
-app.get('/', requireAuth, async (req, res) => {
+app.get("/", requireAuth, async (req, res) => {
   try {
     const now = new Date();
     const cutoff = 10 * 60 * 1000; // 10 min in ms
     // Show events that haven't kicked off yet (betting still open or about to close)
-    const events = fixtureSnapshot.filter(ev => new Date(ev.commence_time) > now);
+    const events = fixtureSnapshot.filter(
+      (ev) => new Date(ev.commence_time) > now,
+    );
 
     const byLeague = {};
     for (const ev of events) {
-      const title = ev.sport_title || 'Unknown League';
+      const title = ev.sport_title || "Unknown League";
       if (!byLeague[title]) byLeague[title] = [];
       byLeague[title].push(ev);
     }
 
     const nextOddsUpdate = (() => {
       const n = moment().tz(TIMEZONE);
-      const next = n.clone().startOf('hour');
-      if (next.hour() % 2 !== 0) next.add(1, 'hour');
-      else if (n.minute() > 0) next.add(2, 'hours');
+      const next = n.clone().startOf("hour");
+      if (next.hour() % 2 !== 0) next.add(1, "hour");
+      else if (n.minute() > 0) next.add(2, "hours");
       // round to next even hour
-      if (next.hour() % 2 !== 0) next.add(1, 'hour');
-      return next.format('h:mm A z');
+      if (next.hour() % 2 !== 0) next.add(1, "hour");
+      return next.format("h:mm A z");
     })();
     const fetchInfo = snapshotMeta
       ? `<p style="font-size:11px;color:#6b7280;margin-top:0;">Fixtures last updated: ${snapshotMeta.fetchedAt} • Next update: ${nextOddsUpdate}</p>`
@@ -1568,13 +1646,15 @@ app.get('/', requireAuth, async (req, res) => {
     // Build a map of fixtureId → total staked by this user for home page badges
     const userBetMap = {};
     if (sessionUserId) {
-      const allUserBets = (await getBets()).filter(b => b.user === sessionUserId);
+      const allUserBets = (await getBets()).filter(
+        (b) => b.user === sessionUserId,
+      );
       for (const b of allUserBets) {
         userBetMap[b.fixtureId] = (userBetMap[b.fixtureId] || 0) + b.stake;
       }
     }
 
-    let html = htmlHeader('No Betting Zone - Home');
+    let html = htmlHeader("No Betting Zone - Home");
     html += `
       <div class="title">No Betting Zone</div>
       ${userGreeting}
@@ -1622,30 +1702,34 @@ app.get('/', requireAuth, async (req, res) => {
       for (const leagueName of leagueNames) {
         const list = byLeague[leagueName].slice(0, 15);
         html += `<details class="tournament" open>
-          <summary>${leagueName} <span style="font-size:12px;font-weight:400;color:#6b7280;">${list.length} match${list.length !== 1 ? 'es' : ''}</span></summary>`;
+          <summary>${leagueName} <span style="font-size:12px;font-weight:400;color:#6b7280;">${list.length} match${list.length !== 1 ? "es" : ""}</span></summary>`;
 
         for (const ev of list) {
           const kickoff = new Date(ev.commence_time);
           const minsLeft = Math.round((kickoff - now) / 60000);
           const bettingOpen = kickoff - now > cutoff;
-          const dateStr = moment(ev.commence_time).tz(TIMEZONE).format('DD MMM, HH:mm');
+          const dateStr = moment(ev.commence_time)
+            .tz(TIMEZONE)
+            .format("DD MMM, HH:mm");
           const badge = !bettingOpen
             ? `<span style="font-size:11px;color:#6b7280;border:1px solid #374151;border-radius:4px;padding:1px 5px;">Closed</span>`
             : minsLeft < 60
               ? `<span style="font-size:11px;color:#f59e0b;border:1px solid #f59e0b;border-radius:4px;padding:1px 5px;">Closes ${minsLeft}m</span>`
-              : '';
+              : "";
 
           // Extract 1X2 odds if available
-          const h2h = (ev.bookmakers?.[0]?.markets || []).find(m => m.key === 'h2h');
-          let oddsHtml = '';
+          const h2h = (ev.bookmakers?.[0]?.markets || []).find(
+            (m) => m.key === "h2h",
+          );
+          let oddsHtml = "";
           if (h2h && h2h.outcomes) {
-            const home = h2h.outcomes.find(o => o.name === ev.home_team);
-            const away = h2h.outcomes.find(o => o.name === ev.away_team);
-            const draw = h2h.outcomes.find(o => o.name === 'Draw');
+            const home = h2h.outcomes.find((o) => o.name === ev.home_team);
+            const away = h2h.outcomes.find((o) => o.name === ev.away_team);
+            const draw = h2h.outcomes.find((o) => o.name === "Draw");
             oddsHtml = `<div class="odds-row">
-              <div class="odds-btn"><div class="label">Home</div><div class="value">${home ? home.price : '—'}</div></div>
-              ${draw ? `<div class="odds-btn"><div class="label">Draw</div><div class="value">${draw.price}</div></div>` : ''}
-              <div class="odds-btn"><div class="label">Away</div><div class="value">${away ? away.price : '—'}</div></div>
+              <div class="odds-btn"><div class="label">Home</div><div class="value">${home ? home.price : "—"}</div></div>
+              ${draw ? `<div class="odds-btn"><div class="label">Draw</div><div class="value">${draw.price}</div></div>` : ""}
+              <div class="odds-btn"><div class="label">Away</div><div class="value">${away ? away.price : "—"}</div></div>
             </div>`;
           }
 
@@ -1659,9 +1743,12 @@ app.get('/', requireAuth, async (req, res) => {
               ${(() => {
                 const staked = userBetMap[ev.id] || 0;
                 const remaining = MAX_STAKE_PER_FIXTURE - staked;
-                if (!bettingOpen) return `<p style="font-size:12px;color:#6b7280;margin:6px 0 0;">Betting closed for this match.</p>`;
-                if (staked === 0) return `<a href="/match?id=${ev.id}" style="display:inline-block;margin-top:6px;font-size:13px;padding:7px 14px;background:#7c3aed;color:#fff;border-radius:8px;text-decoration:none;">Make prediction →</a>`;
-                if (remaining > 0) return `<a href="/match?id=${ev.id}" style="display:inline-block;margin-top:6px;font-size:13px;padding:7px 14px;background:#92400e;color:#fbbf24;border-radius:8px;text-decoration:none;">✏️ ${staked}/${MAX_STAKE_PER_FIXTURE} pts staked — add more →</a>`;
+                if (!bettingOpen)
+                  return `<p style="font-size:12px;color:#6b7280;margin:6px 0 0;">Betting closed for this match.</p>`;
+                if (staked === 0)
+                  return `<a href="/match?id=${ev.id}" style="display:inline-block;margin-top:6px;font-size:13px;padding:7px 14px;background:#7c3aed;color:#fff;border-radius:8px;text-decoration:none;">Make prediction →</a>`;
+                if (remaining > 0)
+                  return `<a href="/match?id=${ev.id}" style="display:inline-block;margin-top:6px;font-size:13px;padding:7px 14px;background:#92400e;color:#fbbf24;border-radius:8px;text-decoration:none;">✏️ ${staked}/${MAX_STAKE_PER_FIXTURE} pts staked — add more →</a>`;
                 return `<a href="/match?id=${ev.id}" style="display:inline-block;margin-top:6px;font-size:13px;padding:7px 14px;background:#14532d;color:#22c55e;border-radius:8px;text-decoration:none;">✓ Fully staked (${MAX_STAKE_PER_FIXTURE} pts)</a>`;
               })()}
             </div>
@@ -1671,20 +1758,19 @@ app.get('/', requireAuth, async (req, res) => {
       }
     }
 
-    html += htmlFooter('home');
+    html += htmlFooter("home");
     res.send(html);
   } catch (e) {
     console.error(e);
-    res.status(500).send('Error: ' + e.message);
+    res.status(500).send("Error: " + e.message);
   }
 });
 
 // USER PAGE – see own bets (session-based)
-app.get('/me', requireAuth, async (req, res) => {
+app.get("/me", requireAuth, async (req, res) => {
   const user = await getUserById(req.session.userId);
-  if (!user)
-      return res.redirect('/login');
-  const bets = (await getBets()).filter(b => b.user === user.userId);
+  if (!user) return res.redirect("/login");
+  const bets = (await getBets()).filter((b) => b.user === user.userId);
 
   let html = htmlHeader(`${user.displayName} - No Betting Zone`);
   html += `
@@ -1697,12 +1783,18 @@ app.get('/me', requireAuth, async (req, res) => {
     html += `<p>No bets yet. Go to <a href="/">Home</a> and pick a match.</p>`;
   } else {
     for (const b of bets) {
-      const statusColor = b.status === 'WON' ? '#22c55e' : b.status === 'LOST' ? '#ef4444' : '#9ca3af';
-      const netLabel = b.netPoints !== null
-        ? `<span style="color:${b.netPoints >= 0 ? '#22c55e' : '#ef4444'};font-weight:bold;">
-            ${b.netPoints >= 0 ? '+' : ''}${b.netPoints.toFixed(1)} pts
+      const statusColor =
+        b.status === "WON"
+          ? "#22c55e"
+          : b.status === "LOST"
+            ? "#ef4444"
+            : "#9ca3af";
+      const netLabel =
+        b.netPoints !== null
+          ? `<span style="color:${b.netPoints >= 0 ? "#22c55e" : "#ef4444"};font-weight:bold;">
+            ${b.netPoints >= 0 ? "+" : ""}${b.netPoints.toFixed(1)} pts
            </span>`
-        : '';
+          : "";
       html += `
         <div class="card">
           <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -1712,112 +1804,102 @@ app.get('/me', requireAuth, async (req, res) => {
           <div style="font-size:12px;color:#9ca3af;margin-top:4px;">
             Pick: <strong style="color:#e5e7eb;">${b.selection}</strong> @ ${b.lockedOdds} • Stake: ${b.stake} pts
           </div>
-          ${b.result ? `<div style="font-size:12px;color:#9ca3af;">Result: ${b.result}</div>` : ''}
-          ${netLabel ? `<div style="margin-top:4px;">${netLabel}</div>` : ''}
+          ${b.result ? `<div style="font-size:12px;color:#9ca3af;">Result: ${b.result}</div>` : ""}
+          ${netLabel ? `<div style="margin-top:4px;">${netLabel}</div>` : ""}
         </div>
       `;
     }
   }
 
-  html += htmlFooter('home');
+  html += htmlFooter("home");
   res.send(html);
 });
 
-app.post('/admin/rebuild-cache', async (req, res) => {
+app.post("/admin/rebuild-cache", async (req, res) => {
+  if (!req.session.isAdmin) {
+    return res.status(403).send("Admin access required");
+  }
 
-    if (!req.session.isAdmin) {
-        return res.status(403).send('Admin access required');
-    }
+  try {
+    await rebuildResultsCache();
 
-    try {
+    req.session.isAdminUnlocked = true;
 
-        await rebuildResultsCache();
+    res.redirect("/admin?cache=success");
+  } catch (err) {
+    console.error("Cache rebuild failed:", err);
 
-        req.session.isAdminUnlocked = true;
+    req.session.isAdminUnlocked = true;
 
-        res.redirect('/admin?cache=success');
-
-    } catch (err) {
-
-        console.error('Cache rebuild failed:', err);
-
-        req.session.isAdminUnlocked = true;
-
-        res.redirect('/admin?cache=failed');
-    }
-
+    res.redirect("/admin?cache=failed");
+  }
 });
 
-app.get('/admin/repair-user/:old/:new', async (req,res)=>{
+app.get("/admin/repair-user/:old/:new", async (req, res) => {
+  try {
+    const stats = await migrateUsername(req.params.old, req.params.new);
 
-    try{
-
-        const stats =
-            await migrateUsername(
-                req.params.old,
-                req.params.new
-            );
-
-        res.json({
-            success:true,
-            stats
-        });
-
-    }
-    catch(err){
-
-        res.status(500).json({
-            success:false,
-            error:err.message
-        });
-
-    }
-
+    res.json({
+      success: true,
+      stats,
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message,
+    });
+  }
 });
 
 // MATCH PAGE – single match view + 1X2 prediction
-app.get('/match', requireAuth, async (req, res) => {
+app.get("/match", requireAuth, async (req, res) => {
   const eventId = req.query.id;
-  if (!eventId) return res.redirect('/');
+  if (!eventId) return res.redirect("/");
 
   try {
     let event = await getEventById(eventId);
     if (!event) {
       // Fixture no longer in snapshot (match started/finished) — reconstruct from bet data
       const allBets = await getBets();
-      const anyBet = allBets.find(b => b.fixtureId === eventId);
-      if (!anyBet) return res.status(404).send('Match not found.');
+      const anyBet = allBets.find((b) => b.fixtureId === eventId);
+      if (!anyBet) return res.status(404).send("Match not found.");
       event = {
         id: eventId,
         home_team: anyBet.homeTeam,
         away_team: anyBet.awayTeam,
         sport_title: anyBet.leagueName,
-        sport_key: anyBet.sportKey || '',
-        commence_time: anyBet.commenceTime || '',
+        sport_key: anyBet.sportKey || "",
+        commence_time: anyBet.commenceTime || "",
         bookmakers: [],
       };
     }
 
     const home = event.home_team;
     const away = event.away_team;
-    const date = moment(event.commence_time).tz(TIMEZONE).format('DD MMM, HH:mm');
-    const leagueName = event.sport_title || 'Unknown League';
+    const date = moment(event.commence_time)
+      .tz(TIMEZONE)
+      .format("DD MMM, HH:mm");
+    const leagueName = event.sport_title || "Unknown League";
     const odds = extractOdds(event);
     const oddsToShow = odds || [
-      { value: 'Home', odd: '1.90' },
-      { value: 'Draw', odd: '3.20' },
-      { value: 'Away', odd: '2.10' },
+      { value: "Home", odd: "1.90" },
+      { value: "Draw", odd: "3.20" },
+      { value: "Away", odd: "2.10" },
     ];
 
     // Fetch existing bets for this fixture
     const allBets = await getBets();
-    const fixtureBets = allBets.filter(b => b.fixtureId === eventId);
-    const myBets = fixtureBets.filter(b => b.user === req.session.userId);
+    const fixtureBets = allBets.filter((b) => b.fixtureId === eventId);
+    const myBets = fixtureBets.filter((b) => b.user === req.session.userId);
     const myTotalStaked = myBets.reduce((s, b) => s + b.stake, 0);
     const myRemaining = MAX_STAKE_PER_FIXTURE - myTotalStaked;
     const mySelection = myBets.length > 0 ? myBets[0].selection : null;
 
-    const labelMap = { Home: `${home} wins`, Draw: 'Draw', Away: `${away} wins` };
+    const labelMap = {
+      Home: `${home} wins`,
+      Draw: "Draw",
+      Away: `${away} wins`,
+    };
 
     let html = htmlHeader(`${home} vs ${away} - No Betting Zone`);
     html += `
@@ -1828,31 +1910,44 @@ app.get('/match', requireAuth, async (req, res) => {
 
     // Is betting still open?
     const kickoffTime = new Date(event.commence_time);
-    const bettingOpen = new Date() < new Date(kickoffTime.getTime() - 10 * 60 * 1000);
+    const bettingOpen =
+      new Date() < new Date(kickoffTime.getTime() - 10 * 60 * 1000);
 
     // Show existing tranches if any
     if (myBets.length > 0) {
-      const tranchemsLabel = myBets.length === 1 ? '1 tranche' : `${myBets.length} tranches`;
+      const tranchemsLabel =
+        myBets.length === 1 ? "1 tranche" : `${myBets.length} tranches`;
       html += `
-        <div style="background:#111827;border:1px solid ${myRemaining === 0 || !bettingOpen ? '#22c55e' : '#f59e0b'};border-radius:10px;padding:14px 16px;margin-bottom:14px;">
-          <div style="font-size:12px;color:${myRemaining === 0 || !bettingOpen ? '#22c55e' : '#fbbf24'};margin-bottom:8px;">
-            ${myRemaining === 0 || !bettingOpen ? '✓ Your prediction (locked)' : `✏️ Your prediction — ${myRemaining} pts remaining`}
+        <div style="background:#111827;border:1px solid ${myRemaining === 0 || !bettingOpen ? "#22c55e" : "#f59e0b"};border-radius:10px;padding:14px 16px;margin-bottom:14px;">
+          <div style="font-size:12px;color:${myRemaining === 0 || !bettingOpen ? "#22c55e" : "#fbbf24"};margin-bottom:8px;">
+            ${myRemaining === 0 || !bettingOpen ? "✓ Your prediction (locked)" : `✏️ Your prediction — ${myRemaining} pts remaining`}
           </div>
           <table style="width:100%;border-collapse:collapse;font-size:12px;">
             <thead><tr style="color:#6b7280;font-size:11px;">
               <th style="text-align:left;padding:3px 0;">Tranche</th>
               <th style="text-align:left;padding:3px 4px;">Pick</th>
               <th style="text-align:right;padding:3px 4px;">Stake</th>
-              <th style="text-align:right;padding:3px 0;">Odds locked</th>
+              <th style="text-align:right;padding:3px 0;">Odds</th>
+            <th style="text-align:center;padding:3px 4px;">Score</th>
             </tr></thead>
             <tbody>
-              ${myBets.map((b, i) => `
+              ${myBets
+                .map(
+                  (b, i) => `
                 <tr style="border-top:1px solid #1f2937;">
                   <td style="padding:4px 0;color:#9ca3af;">#${i + 1}</td>
                   <td style="padding:4px 4px;color:#e5e7eb;">${labelMap[b.selection] || b.selection}</td>
                   <td style="padding:4px 4px;text-align:right;color:#a78bfa;">${b.stake} pts</td>
-                  <td style="padding:4px 0;text-align:right;color:#22c55e;">${b.lockedOdds}x</td>
-                </tr>`).join('')}
+                  <td style="padding:4px 0;text-align:right;color:#22c55e;">
+    ${b.lockedOdds}x
+</td>
+
+<td style="padding:4px 4px;text-align:center;color:#f59e0b;">
+    ${b.predictedHomeGoals ?? "-"}-${b.predictedAwayGoals ?? "-"}
+</td>
+                </tr>`,
+                )
+                .join("")}
               <tr style="border-top:1px solid #374151;font-weight:700;">
                 <td style="padding:4px 0;font-size:11px;color:#9ca3af;">TOTAL</td>
                 <td style="padding:4px 4px;text-align:right;color:#a78bfa;">${myTotalStaked} pts</td>
@@ -1866,15 +1961,15 @@ app.get('/match', requireAuth, async (req, res) => {
 
     // Show form if betting open and stake remaining
     if (bettingOpen && myRemaining > 0) {
-      const availableStakes = STAKE_OPTIONS.filter(s => s <= myRemaining);
+      const availableStakes = STAKE_OPTIONS.filter((s) => s <= myRemaining);
       const defaultStake = availableStakes[availableStakes.length - 1];
       html += `
         <form method="POST" action="/bet">
           <input type="hidden" name="eventId" value="${eventId}">
           <input type="hidden" name="leagueName" value="${leagueName}">
-          <p style="margin-bottom:6px;">${myBets.length > 0 ? 'Add another tranche (1X2):' : 'Pick result (1X2):'}</p>
+          <p style="margin-bottom:6px;">${myBets.length > 0 ? "Add another tranche (1X2):" : "Pick result (1X2):"}</p>
       `;
-      oddsToShow.forEach(o => {
+      oddsToShow.forEach((o) => {
         html += `
           <div style="margin-bottom:8px;">
             <label id="sel-label-${o.value}" style="display:flex;align-items:center;gap:10px;background:#111827;border:1px solid #1f2937;border-radius:8px;padding:10px 12px;cursor:pointer;">
@@ -1889,15 +1984,15 @@ app.get('/match', requireAuth, async (req, res) => {
       html += `
           <p style="margin:14px 0 6px;">Choose stake <span style="font-size:11px;color:#9ca3af;">(max ${myRemaining} pts remaining)</span>:</p>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
-            ${STAKE_OPTIONS.map(s => {
+            ${STAKE_OPTIONS.map((s) => {
               const disabled = s > myRemaining;
               const isDefault = s === defaultStake;
               return `
-              <label style="flex:1;min-width:48px;text-align:center;cursor:${disabled ? 'not-allowed' : 'pointer'};${disabled ? 'opacity:0.3;' : ''}" ${disabled ? '' : `onclick="selectStake(this, ${s})"`}>
-                <input type="radio" name="stake" value="${s}" ${isDefault ? 'checked' : ''} ${disabled ? 'disabled' : ''} required style="display:none;">
-                <span class="stake-btn" style="display:block;padding:8px 4px;border:1px solid ${isDefault ? '#7c3aed' : '#374151'};border-radius:8px;font-size:14px;font-weight:600;background:${isDefault ? '#4c1d95' : '#1f2937'};color:#fff;">${s}</span>
+              <label style="flex:1;min-width:48px;text-align:center;cursor:${disabled ? "not-allowed" : "pointer"};${disabled ? "opacity:0.3;" : ""}" ${disabled ? "" : `onclick="selectStake(this, ${s})"`}>
+                <input type="radio" name="stake" value="${s}" ${isDefault ? "checked" : ""} ${disabled ? "disabled" : ""} required style="display:none;">
+                <span class="stake-btn" style="display:block;padding:8px 4px;border:1px solid ${isDefault ? "#7c3aed" : "#374151"};border-radius:8px;font-size:14px;font-weight:600;background:${isDefault ? "#4c1d95" : "#1f2937"};color:#fff;">${s}</span>
               </label>`;
-            }).join('')}
+            }).join("")}
           </div>
           <script>
             function selectStake(clicked, val) {
@@ -1910,20 +2005,75 @@ app.get('/match', requireAuth, async (req, res) => {
               span.style.background = '#4c1d95';
             }
           </script>
-          <button type="submit" style="margin-top:4px;width:100%;">${myBets.length > 0 ? 'Add Tranche' : 'Place Bet'}</button>
+          <div style="margin:16px 0;">
+          <p style="font-size:13px;margin-bottom:8px;">
+            Exact Score Prediction
+            <span style="color:#22c55e;">
+              (+1 odds boost if correct)
+            </span>
+          </p>
+
+          <div style="display:flex;align-items:center;gap:10px;">
+            <div style="flex:1;">
+              <div style="font-size:11px;color:#9ca3af;">
+                ${home}
+              </div>
+              <input
+                  type="number"
+                  min="0"
+                  max="10"
+                  name="predictedHomeGoals"
+                  style="text-align:center;">
+            </div>
+
+            <div style="font-size:18px;">
+              -
+            </div>
+
+            <div style="flex:1;">
+              <div style="font-size:11px;color:#9ca3af;">
+                ${away}
+              </div>
+              <input
+                  type="number"
+                  min="0"
+                  max="10"
+                  name="predictedAwayGoals"
+                  style="text-align:center;">
+            </div>
+          </div>
+        </div>
+          <button type="submit" style="margin-top:4px;width:100%;">${myBets.length > 0 ? "Add Tranche" : "Place Bet"}</button>
         </form>
-        <p style="margin-top:8px;font-size:11px;color:#6b7280;">${odds ? '📊 Live bookmaker odds' : '📊 Estimated odds'}</p>
+        <p style="margin-top:8px;font-size:11px;color:#6b7280;">${odds ? "📊 Live bookmaker odds" : "📊 Estimated odds"}</p>
 
         <!-- Confirmation overlay -->
         <div id="bet-confirm-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:999;align-items:center;justify-content:center;">
           <div style="background:#111827;border:1px solid #374151;border-radius:14px;padding:24px 20px;max-width:320px;width:90%;text-align:center;">
-            <div style="font-size:15px;font-weight:700;color:#e5e7eb;margin-bottom:6px;">${myBets.length > 0 ? 'Add tranche' : 'Confirm bet'}</div>
+            <div style="font-size:15px;font-weight:700;color:#e5e7eb;margin-bottom:6px;">${myBets.length > 0 ? "Add tranche" : "Confirm bet"}</div>
             <div style="font-size:13px;color:#9ca3af;margin-bottom:14px;">${home} vs ${away}</div>
             <div style="background:#1f2937;border-radius:8px;padding:12px;margin-bottom:16px;">
               <div style="font-size:13px;color:#9ca3af;">Pick</div>
               <div id="confirm-pick" style="font-size:16px;font-weight:700;color:#e5e7eb;margin-top:2px;"></div>
               <div style="font-size:13px;color:#9ca3af;margin-top:8px;">Stake</div>
-              <div id="confirm-stake" style="font-size:16px;font-weight:700;color:#a78bfa;margin-top:2px;"></div>
+<div id="confirm-stake"
+     style="font-size:16px;font-weight:700;color:#a78bfa;margin-top:2px;">
+</div>
+
+<div style="font-size:13px;color:#9ca3af;margin-top:8px;">
+    Score Prediction
+</div>
+<div id="confirm-score"
+     style="font-size:16px;font-weight:700;color:#f59e0b;margin-top:2px;">
+</div>
+
+<div style="font-size:13px;color:#9ca3af;margin-top:8px;">
+    Locked Odds
+</div>
+<div id="confirm-odds"
+     style="font-size:16px;font-weight:700;color:#22c55e;margin-top:2px;">
+</div>
+              
             </div>
             <div style="display:flex;gap:10px;">
               <button id="bet-cancel-btn" style="flex:1;background:#1f2937;color:#9ca3af;border:1px solid #374151;padding:12px;border-radius:8px;font-size:14px;font-weight:600;">Cancel</button>
@@ -1938,15 +2088,83 @@ app.get('/match', requireAuth, async (req, res) => {
             const labelMap = { Home: '${home} wins', Draw: 'Draw', Away: '${away} wins' };
             let confirmed = false;
             form.addEventListener('submit', function(e) {
-              if (confirmed) return;
-              e.preventDefault();
-              const sel = form.querySelector('input[name="selection"]:checked');
-              const stk = form.querySelector('input[name="stake"]:checked');
-              if (!sel || !stk) return;
-              document.getElementById('confirm-pick').textContent = labelMap[sel.value] || sel.value;
-              document.getElementById('confirm-stake').textContent = stk.value + ' pts';
-              overlay.style.display = 'flex';
-            });
+
+    if (confirmed) return;
+
+    e.preventDefault();
+
+    const sel = form.querySelector('input[name="selection"]:checked');
+    const stk = form.querySelector('input[name="stake"]:checked');
+
+    if (!sel || !stk) return;
+
+    const homeGoalsInput = form.querySelector('input[name="predictedHomeGoals"]');
+    const awayGoalsInput = form.querySelector('input[name="predictedAwayGoals"]');
+
+    const homeGoals = Number(homeGoalsInput?.value || 0);
+    const awayGoals = Number(awayGoalsInput?.value || 0);
+
+    // Validate score prediction against selected outcome
+
+    if (sel.value === "Home" && homeGoals <= awayGoals) {
+        alert(
+            "Your score prediction (" +
+            homeGoals +
+            "-" +
+            awayGoals +
+            ") does not match ${home} winning."
+        );
+        return;
+    }
+
+    if (sel.value === "Away" && awayGoals <= homeGoals) {
+        alert(
+            "Your score prediction (" +
+            homeGoals +
+            "-" +
+            awayGoals +
+            ") does not match ${away} winning."
+        );
+        return;
+    }
+
+    if (sel.value === "Draw" && homeGoals !== awayGoals) {
+        alert(
+            "Draw predictions must have equal scores."
+        );
+        return;
+    }
+
+    // Populate confirmation modal
+
+    document.getElementById('confirm-pick').textContent =
+        labelMap[sel.value] || sel.value;
+
+    document.getElementById('confirm-stake').textContent =
+        stk.value + ' pts';
+
+    // Score prediction
+    const scoreEl = document.getElementById('confirm-score');
+    if (scoreEl) {
+        scoreEl.textContent =
+            homeGoals + " - " + awayGoals;
+    }
+
+    // Locked odds
+    const selectedOdds =
+    document
+        .getElementById('sel-label-' + sel.value)
+        ?.querySelectorAll('span')[1]
+        ?.textContent || '-';
+
+    const oddsEl = document.getElementById('confirm-odds');
+    if (oddsEl) {
+        oddsEl.textContent =
+            selectedOdds + " (+1 if exact score)";
+    }
+
+    overlay.style.display = 'flex';
+});
             document.getElementById('bet-cancel-btn').addEventListener('click', function() {
               overlay.style.display = 'none';
             });
@@ -1986,11 +2204,11 @@ app.get('/match', requireAuth, async (req, res) => {
 
     // Predictions so far — one row per tranche
     const poolTotal = fixtureBets.reduce((s, b) => s + b.stake, 0);
-    const playerCount = new Set(fixtureBets.map(b => b.user)).size;
+    const playerCount = new Set(fixtureBets.map((b) => b.user)).size;
 
     // While betting is open, only show the current user's own tranches
     const visibleBets = bettingOpen
-      ? fixtureBets.filter(b => b.user === req.session.userId)
+      ? fixtureBets.filter((b) => b.user === req.session.userId)
       : fixtureBets;
 
     html += `<hr style="border-color:#1f2937;margin:16px 0;">`;
@@ -1998,209 +2216,239 @@ app.get('/match', requireAuth, async (req, res) => {
       html += `<p style="font-size:13px;color:#6b7280;">No predictions placed yet.</p>`;
     } else {
       html += `
-        <p style="font-size:13px;color:#9ca3af;margin-bottom:8px;">
-          Predictions so far &nbsp;·&nbsp; <strong style="color:#e5e7eb;">${playerCount}</strong> player${playerCount !== 1 ? 's' : ''}
-          &nbsp;·&nbsp; Pool: <strong style="color:#e5e7eb;">${poolTotal} pts</strong>
-          ${bettingOpen ? `&nbsp;·&nbsp; <span style="font-size:11px;color:#6b7280;">(others hidden until kick-off)</span>` : ''}
-        </p>
-        <table style="width:100%;border-collapse:collapse;font-size:13px;">
-          <thead>
-            <tr style="border-bottom:1px solid #1f2937;color:#6b7280;font-size:11px;text-transform:uppercase;">
-              <th style="padding:6px 4px;text-align:left;">Player</th>
-              <th style="padding:6px 4px;text-align:left;">Pick</th>
-              <th style="padding:6px 4px;text-align:right;">Stake</th>
-              <th style="padding:6px 4px;text-align:right;">Odds</th>
+  <p style="font-size:13px;color:#9ca3af;margin-bottom:8px;">
+    Predictions so far &nbsp;·&nbsp;
+    <strong style="color:#e5e7eb;">${playerCount}</strong>
+    player${playerCount !== 1 ? "s" : ""}
+    &nbsp;·&nbsp;
+    Pool: <strong style="color:#e5e7eb;">${poolTotal} pts</strong>
+    ${
+      bettingOpen
+        ? `&nbsp;·&nbsp;
+           <span style="font-size:11px;color:#6b7280;">
+             (others hidden until kick-off)
+           </span>`
+        : ""
+    }
+  </p>
+
+  <table style="width:100%;border-collapse:collapse;font-size:13px;">
+    <thead>
+      <tr style="border-bottom:1px solid #1f2937;color:#6b7280;font-size:11px;text-transform:uppercase;">
+        <th style="padding:6px 4px;text-align:left;">Player</th>
+        <th style="padding:6px 4px;text-align:left;">Pick</th>
+        <th style="padding:6px 4px;text-align:right;">Stake</th>
+        <th style="padding:6px 4px;text-align:right;">Odds</th>
+       <th style="padding:6px 4px;text-align:center;">Score</th>
+      </tr>
+    </thead>
+
+    <tbody>
+
+      ${
+        visibleBets.length === 0
+          ? `
+            <tr>
+              <td colspan="5"
+                  style="padding:10px 4px;color:#6b7280;font-size:12px;">
+                You haven't placed a bet on this match yet.
+              </td>
             </tr>
-          </thead>
-          <tbody>
-            ${visibleBets.length === 0
-              ? `<tr><td colspan="4" style="padding:10px 4px;color:#6b7280;font-size:12px;">You haven't placed a bet on this match yet.</td></tr>`
-              : visibleBets.map(b => {
-                  const isMe = b.user === req.session.userId;
-                  const selLabel = labelMap[b.selection] || b.selection;
-                  return `<tr style="border-bottom:1px solid #1f2937;${isMe ? 'color:#22c55e;' : ''}">
-                    <td style="padding:8px 4px;">${b.user}${isMe ? ' ★' : ''}</td>
-                    <td style="padding:8px 4px;">${selLabel}</td>
-                    <td style="padding:8px 4px;text-align:right;">${b.stake} pts</td>
-                    <td style="padding:8px 4px;text-align:right;">${b.lockedOdds}x</td>
-                  </tr>`;
-                }).join('')
-            }
-          </tbody>
-        </table>
-      `;
+          `
+          : visibleBets
+              .map((b) => {
+                const isMe = b.user === req.session.userId;
+                const selLabel = labelMap[b.selection] || b.selection;
+
+                return `
+                <tr style="border-bottom:1px solid #1f2937;${isMe ? "color:#22c55e;" : ""}">
+                  <td style="padding:8px 4px;">
+                    ${b.user}${isMe ? " ★" : ""}
+                  </td>
+
+                  <td style="padding:8px 4px;">
+                    ${selLabel}
+                  </td>
+
+                  <td style="padding:8px 4px;text-align:right;">
+                    ${b.stake} pts
+                  </td>
+
+                  <td style="padding:8px 4px;text-align:right;color:#22c55e;">
+  ${b.lockedOdds}x
+</td>
+
+<td style="padding:8px 4px;text-align:center;color:#f59e0b;font-weight:700;">
+  ${b.predictedHomeGoals}-${b.predictedAwayGoals}
+</td>
+                </tr>
+              `;
+              })
+              .join("")
+      }
+
+    </tbody>
+  </table>
+`;
     }
 
     html += `<p style="margin-top:12px;"><a href="/">← Back to Home</a></p>`;
-    html += htmlFooter('home');
+    html += htmlFooter("home");
     res.send(html);
   } catch (e) {
     console.error(e);
-    res.status(500).send('Error loading match: ' + e.message);
+    res.status(500).send("Error loading match: " + e.message);
   }
 });
 
 // ADMIN - Delete User Bets
-app.get('/admin/delete-user-bets/:username', async (req, res) => {
-  
-
-    const username = req.params.username;
-    const pendingOnly = req.query.pending === "true";
+app.get("/admin/delete-user-bets/:username", async (req, res) => {
+  const username = req.params.username;
+  const pendingOnly = req.query.pending === "true";
 
   if (!username || !username.trim()) {
     return res.status(400).json({
-        success: false,
-        error: "Username required"
+      success: false,
+      error: "Username required",
     });
-}
+  }
 
-    try {
+  try {
+    const bets = await getBets();
 
-        const bets = await getBets();
+    const originalCount = bets.length;
 
-        const originalCount = bets.length;
+    const filtered = bets.filter((b) => {
+      const isUser = b.user.toLowerCase() === username.toLowerCase();
 
-        const filtered = bets.filter(b => {
+      if (!isUser) return true;
 
-            const isUser =
-                b.user.toLowerCase() === username.toLowerCase();
+      if (!pendingOnly) return false;
 
-            if (!isUser)
-                return true;
+      return b.status !== "PENDING";
+    });
 
-            if (!pendingOnly)
-                return false;
+    const removed = originalCount - filtered.length;
 
-            return b.status !== "PENDING";
+    await updateBets(filtered);
 
-        });
+    res.json({
+      success: true,
+      username,
+      pendingOnly,
+      removedBets: removed,
+      remainingBets: filtered.length,
+    });
+  } catch (err) {
+    console.error(err);
 
-        const removed = originalCount - filtered.length;
-
-        await updateBets(filtered);
-
-
-        res.json({
-            success: true,
-            username,
-            pendingOnly,
-            removedBets: removed,
-            remainingBets: filtered.length
-        });
-
-    } catch (err) {
-
-        console.error(err);
-
-        res.status(500).json({
-            success: false,
-            error: err.message
-        });
-
-    }
-
+    res.status(500).json({
+      success: false,
+      error: err.message,
+    });
+  }
 });
 
 app.get("/admin/verify-migration/:old/:new", async (req, res) => {
+  const oldId = req.params.old;
+  const newId = req.params.new;
 
-    const oldId = req.params.old;
-    const newId = req.params.new;
+  const report = {};
 
-    const report = {};
+  report.oldUser = await getUserById(oldId);
+  report.newUser = await getUserById(newId);
 
-    report.oldUser = await getUserById(oldId);
-    report.newUser = await getUserById(newId);
+  if (report.newUser) {
+    report.emailMapping = await db.get(
+      `email:${report.newUser.email.toLowerCase()}`,
+    );
+  }
 
-    if (report.newUser) {
-        report.emailMapping = await db.get(
-            `email:${report.newUser.email.toLowerCase()}`
-        );
+  const bets = await getBets();
+
+  report.oldBets = bets.filter((b) => b.user === oldId).length;
+  report.newBets = bets.filter((b) => b.user === newId).length;
+
+  const messages = await getMessages();
+
+  report.oldMessages = messages.filter((m) => m.name === oldId).length;
+  report.newMessages = messages.filter((m) => m.name === newId).length;
+
+  const logKeys = await db.list("settlementLog:");
+
+  let oldLogs = 0;
+  let newLogs = 0;
+
+  for (const key of logKeys) {
+    const log = await db.get(key);
+
+    if (!log) continue;
+
+    for (const entry of log.entries) {
+      if (entry.user === oldId) oldLogs++;
+
+      if (entry.user === newId) newLogs++;
     }
+  }
 
-    const bets = await getBets();
+  report.oldLogs = oldLogs;
+  report.newLogs = newLogs;
 
-    report.oldBets = bets.filter(b => b.user === oldId).length;
-    report.newBets = bets.filter(b => b.user === newId).length;
-
-    const messages = await getMessages();
-
-    report.oldMessages = messages.filter(m => m.name === oldId).length;
-    report.newMessages = messages.filter(m => m.name === newId).length;
-
-    const logKeys = await db.list("settlementLog:");
-
-    let oldLogs = 0;
-    let newLogs = 0;
-
-    for (const key of logKeys) {
-
-        const log = await db.get(key);
-
-        if (!log) continue;
-
-        for (const entry of log.entries) {
-
-            if (entry.user === oldId) oldLogs++;
-
-            if (entry.user === newId) newLogs++;
-
-        }
-
-    }
-
-    report.oldLogs = oldLogs;
-    report.newLogs = newLogs;
-
-    res.json(report);
-
+  res.json(report);
 });
 
-
-app.post('/bet', requireAuth, async (req, res) => {
+app.post("/bet", requireAuth, async (req, res) => {
   const { eventId, selection, leagueName } = req.body || {};
   if (!eventId || !selection) {
-    return res.status(400).send('Missing fields');
+    return res.status(400).send("Missing fields");
   }
 
   try {
     const user = await getUserById(req.session.userId);
 
-    if (!user)
-        return res.redirect('/login');
-    if (!user) return res.redirect('/login');
+    if (!user) return res.redirect("/login");
+    if (!user) return res.redirect("/login");
     const event = await getEventById(eventId);
-    if (!event) return res.status(400).send('Match not found');
+    if (!event) return res.status(400).send("Match not found");
 
     // Betting closes 10 minutes before kick-off
     const kickoff = new Date(event.commence_time);
     const tenMinsBefore = new Date(kickoff.getTime() - 10 * 60 * 1000);
     if (new Date() >= tenMinsBefore) {
-      const timeStr = moment(kickoff).tz(TIMEZONE).format('DD MMM, HH:mm');
-      return res.send(`Betting closed — predictions locked 10 minutes before kick-off (${timeStr} IST).`);
+      const timeStr = moment(kickoff).tz(TIMEZONE).format("DD MMM, HH:mm");
+      return res.send(
+        `Betting closed — predictions locked 10 minutes before kick-off (${timeStr} IST).`,
+      );
     }
 
     // Validate stake
     const stakeInput = parseInt(req.body.stake);
     if (!STAKE_OPTIONS.includes(stakeInput)) {
-      return res.status(400).send('Invalid stake amount.');
+      return res.status(400).send("Invalid stake amount.");
     }
     const stake = stakeInput;
 
     // Enforce max stake cap per fixture
     const bets = await getBets();
-    const existingTranches = bets.filter(b => b.user === user.userId && b.fixtureId === eventId);
+    const existingTranches = bets.filter(
+      (b) => b.user === user.userId && b.fixtureId === eventId,
+    );
     const alreadyStaked = existingTranches.reduce((s, b) => s + b.stake, 0);
-    
+
     // FIX: Use MAX_STAKE_PER_FIXTURE here
     if (alreadyStaked + stake > MAX_STAKE_PER_FIXTURE) {
-      return res.status(400).send(`Only ${MAX_STAKE_PER_FIXTURE - alreadyStaked} pts remaining for this match.`);
+      return res
+        .status(400)
+        .send(
+          `Only ${MAX_STAKE_PER_FIXTURE - alreadyStaked} pts remaining for this match.`,
+        );
     }
 
     // Lock in odds
     const odds = extractOdds(event);
     let lockedOdds = 2.0;
     if (odds) {
-      const match = odds.find(o => o.value === selection);
+      const match = odds.find((o) => o.value === selection);
       if (match) lockedOdds = parseFloat(match.odd) || 2.0;
     }
 
@@ -2212,15 +2460,22 @@ app.post('/bet', requireAuth, async (req, res) => {
       sportKey: event.sport_key,
       homeTeam: event.home_team,
       awayTeam: event.away_team,
-      leagueName: leagueName || event.sport_title || 'Unknown League',
-      commenceTime: event.commence_time || '',
-      market: 'MATCH_RESULT',
+      leagueName: leagueName || event.sport_title || "Unknown League",
+      commenceTime: event.commence_time || "",
+      market: "MATCH_RESULT",
       selection,
       stake,
       lockedOdds,
-      status: 'PENDING',
+      status: "PENDING",
       netPoints: null,
       result: null,
+      predictedHomeGoals: req.body.predictedHomeGoals
+        ? Number(req.body.predictedHomeGoals)
+        : null,
+
+      predictedAwayGoals: req.body.predictedAwayGoals
+        ? Number(req.body.predictedAwayGoals)
+        : null,
     };
 
     // FIX: Await the database write
@@ -2230,30 +2485,49 @@ app.post('/bet', requireAuth, async (req, res) => {
     const totalNow = alreadyStaked + stake;
     const remaining = MAX_STAKE_PER_FIXTURE - totalNow;
 
-    const selectionLabel = selection === 'Home' ? `${event.home_team} wins`
-      : selection === 'Away' ? `${event.away_team} wins`
-      : 'Draw';
+    const selectionLabel =
+      selection === "Home"
+        ? `${event.home_team} wins`
+        : selection === "Away"
+          ? `${event.away_team} wins`
+          : "Draw";
 
     // ... (rest of your res.send HTML) ...
     res.send(`
-    <html><body style="background:#020617;color:#e5e7eb;font-family:system-ui;padding:20px;">
-      <div style="max-width:400px;margin:0 auto;text-align:center;padding-top:40px;">
-        <div style="font-size:48px;margin-bottom:12px;">${isFirstTranche ? '✅' : '➕'}</div>
-        <h2 style="font-size:22px;margin-bottom:6px;">${isFirstTranche ? 'Bet Placed!' : 'Tranche Added!'}</h2>
-        <p style="font-size:15px;color:#9ca3af;margin-bottom:24px;">${event.home_team} vs ${event.away_team}</p>
-        <div style="background:#111827;border:1px solid #1f2937;border-radius:12px;padding:20px;margin-bottom:24px;">
-          <div style="font-size:13px;color:#9ca3af;margin-bottom:4px;">Your pick</div>
-          <div style="font-size:22px;font-weight:700;color:#e5e7eb;margin-bottom:16px;">${selectionLabel}</div>
-          <div style="display:flex;justify-content:space-around;margin-bottom:12px;">
-            <div>
-              <div style="font-size:13px;color:#9ca3af;">This tranche</div>
-              <div style="font-size:20px;font-weight:700;color:#a78bfa;">${stake} pts</div>
-            </div>
-            <div>
-              <div style="font-size:13px;color:#9ca3af;">Odds locked</div>
-              <div style="font-size:20px;font-weight:700;color:#22c55e;">${lockedOdds}x</div>
-            </div>
-          </div>
+      <html><body style="background:#020617;color:#e5e7eb;font-family:system-ui;padding:20px;">
+        <div style="max-width:400px;margin:0 auto;text-align:center;padding-top:40px;">
+          <div style="font-size:48px;margin-bottom:12px;">${isFirstTranche ? "✅" : "➕"}</div>
+          <h2 style="font-size:22px;margin-bottom:6px;">${isFirstTranche ? "Bet Placed!" : "Tranche Added!"}</h2>
+          <p style="font-size:15px;color:#9ca3af;margin-bottom:24px;">${event.home_team} vs ${event.away_team}</p>
+          <div style="background:#111827;border:1px solid #1f2937;border-radius:12px;padding:20px;margin-bottom:24px;">
+            <div style="font-size:13px;color:#9ca3af;margin-bottom:4px;">Your pick</div>
+            <div style="font-size:22px;font-weight:700;color:#e5e7eb;margin-bottom:16px;">${selectionLabel}</div>
+            <div style="display:flex;justify-content:space-between;gap:20px;margin-bottom:12px;">
+
+  <div>
+    <div style="font-size:13px;color:#9ca3af;">This tranche</div>
+    <div style="font-size:20px;font-weight:700;color:#a78bfa;">
+      ${stake} pts
+    </div>
+  </div>
+
+  <div style="text-align:right;">
+    <div style="font-size:13px;color:#9ca3af;">Odds locked</div>
+
+    <div style="font-size:20px;font-weight:700;color:#22c55e;">
+      ${lockedOdds}x
+    </div>
+
+    <div style="font-size:13px;font-weight:700;color:#f59e0b;margin-top:4px;">
+      🎯 ${bet.predictedHomeGoals}-${bet.predictedAwayGoals}
+    </div>
+
+    <div style="font-size:11px;color:#fbbf24;">
+      +1.00x if exact score
+    </div>
+  </div>
+
+</div>
           <div style="font-size:12px;color:#9ca3af;border-top:1px solid #374151;padding-top:10px;display:flex;justify-content:space-between;">
             <span>Total staked on match</span>
             <strong style="color:#e5e7eb;">${totalNow} / ${MAX_STAKE_PER_FIXTURE} pts</strong>
@@ -2267,7 +2541,6 @@ app.post('/bet', requireAuth, async (req, res) => {
       </div>
     </body></html>
   `);
-
   } catch (err) {
     console.error("[Bet Error]:", err);
     res.status(500).send("Failed to register bet. Please try again.");
@@ -2275,31 +2548,31 @@ app.post('/bet', requireAuth, async (req, res) => {
 });
 
 // MY PREDICTIONS SUMMARY PAGE
-app.get('/summary', requireAuth, async (req, res) => {
+app.get("/summary", requireAuth, async (req, res) => {
   const user = await getUserById(req.session.userId);
 
-  if (!user)
-      return res.redirect('/login');
+  if (!user) return res.redirect("/login");
 
   // Fetch only non-bet data from cache, fetch bets fresh
   const lastUpdated = snapshotMeta?.fetchedAt || "Never";
   const allBets = await getBets(); // Always real-time
-  
-  const bets = allBets.filter(b => b.user === user.userId);
-  
+
+  const bets = allBets.filter((b) => b.user === user.userId);
+
   // 3. Pre-calculate stats (Only runs once per load)
   const total = bets.length;
-  const won = bets.filter(b => b.status === 'WON').length;
-  const lost = bets.filter(b => b.status === 'LOST').length;
-  const pending = bets.filter(b => b.status === 'PENDING').length;
-  const winRate = (total - pending) > 0 ? Math.round((won / (total - pending)) * 100) : 0;
+  const won = bets.filter((b) => b.status === "WON").length;
+  const lost = bets.filter((b) => b.status === "LOST").length;
+  const pending = bets.filter((b) => b.status === "PENDING").length;
+  const winRate =
+    total - pending > 0 ? Math.round((won / (total - pending)) * 100) : 0;
   const totalNet = user.totalNetPoints;
 
   let html = htmlHeader(`${user.displayName} - My Predictions`);
   html += `
     <div style="display:flex;justify-content:space-between;align-items:center;">
       <h2 style="margin-bottom:4px;">${user.displayName}</h2>
-      ${!user.usernameChanged ? `<a href="/edit-username" style="font-size:12px;background:#1f2937;color:#e5e7eb;padding:4px 8px;border-radius:6px;border:1px solid #374151;">✏️ Edit Name</a>` : ''}
+      ${!user.usernameChanged ? `<a href="/edit-username" style="font-size:12px;background:#1f2937;color:#e5e7eb;padding:4px 8px;border-radius:6px;border:1px solid #374151;">✏️ Edit Name</a>` : ""}
     </div>
     <p style="color:#9ca3af;font-size:13px;margin-top:0;">Prediction history</p>
 
@@ -2310,7 +2583,7 @@ app.get('/summary', requireAuth, async (req, res) => {
         <div style="font-size:11px;color:#9ca3af;margin-top:2px;">TOTAL PICKS</div>
       </div>
       <div class="card" style="text-align:center;">
-        <div style="font-size:22px;font-weight:bold;color:${totalNet >= 0 ? '#22c55e' : '#ef4444'};">${totalNet >= 0 ? '+' : ''}${totalNet.toFixed(1)}</div>
+        <div style="font-size:22px;font-weight:bold;color:${totalNet >= 0 ? "#22c55e" : "#ef4444"};">${totalNet >= 0 ? "+" : ""}${totalNet.toFixed(1)}</div>
         <div style="font-size:11px;color:#9ca3af;margin-top:2px;">NET POINTS</div>
       </div>
       <div class="card" style="text-align:center;">
@@ -2324,7 +2597,9 @@ app.get('/summary', requireAuth, async (req, res) => {
     </div>
 
     <!-- Win rate bar -->
-    ${total - pending > 0 ? `
+    ${
+      total - pending > 0
+        ? `
     <div class="card" style="margin-bottom:16px;">
       <div style="display:flex;justify-content:space-between;font-size:12px;color:#9ca3af;margin-bottom:6px;">
         <span>Win rate</span><span style="color:#e5e7eb;font-weight:bold;">${winRate}%</span>
@@ -2332,8 +2607,10 @@ app.get('/summary', requireAuth, async (req, res) => {
       <div style="background:#1f2937;border-radius:4px;height:8px;overflow:hidden;">
         <div style="background:#22c55e;height:100%;width:${winRate}%;border-radius:4px;transition:width 0.3s;"></div>
       </div>
-      <div style="font-size:11px;color:#9ca3af;margin-top:4px;">${won}W / ${lost}L${pending > 0 ? ` / ${pending} pending` : ''}</div>
-    </div>` : ''}
+      <div style="font-size:11px;color:#9ca3af;margin-top:4px;">${won}W / ${lost}L${pending > 0 ? ` / ${pending} pending` : ""}</div>
+    </div>`
+        : ""
+    }
 
     <h3 style="font-size:14px;margin-bottom:8px;">All Predictions</h3>
   `;
@@ -2351,7 +2628,7 @@ app.get('/summary', requireAuth, async (req, res) => {
     // Pre-fetch snapshot events for pending fixtures (kickoff time)
     const eventCache = {};
     for (const [fid, tranches] of Object.entries(byFixture)) {
-      if (tranches.some(t => t.status === 'PENDING') && !eventCache[fid]) {
+      if (tranches.some((t) => t.status === "PENDING") && !eventCache[fid]) {
         const ev = await getEventById(fid);
         if (ev) eventCache[fid] = ev;
       }
@@ -2362,36 +2639,157 @@ app.get('/summary', requireAuth, async (req, res) => {
       const first = tranches[0];
       const totalStake = tranches.reduce((s, t) => s + t.stake, 0);
       const totalNet = tranches.reduce((s, t) => s + (t.netPoints ?? 0), 0);
-      const hasPending = tranches.some(t => t.status === 'PENDING');
-      const status = hasPending ? 'PENDING' : (tranches.some(t => t.status === 'WON') ? 'WON' : 'LOST');
+      const hasPending = tranches.some((t) => t.status === "PENDING");
+      const status = hasPending
+        ? "PENDING"
+        : tranches.some((t) => t.status === "WON")
+          ? "WON"
+          : "LOST";
       return { fid, tranches, first, totalStake, totalNet, status };
     });
-    groups.sort((a, b) => (a.status === 'PENDING' ? -1 : 1) - (b.status === 'PENDING' ? -1 : 1));
+    groups.sort((a, b) => {
+      // Pending always on top
+      if (a.status === "PENDING" && b.status !== "PENDING") return -1;
 
-    for (const { fid, tranches, first, totalStake, totalNet, status } of groups) {
-      const statusColor = status === 'WON' ? '#22c55e' : status === 'LOST' ? '#ef4444' : '#f59e0b';
-      const matchTitle = first.homeTeam && first.awayTeam
-        ? `${first.homeTeam} vs ${first.awayTeam}`
-        : first.leagueName;
-      const selectionMap = { Home: `${first.homeTeam} wins`, Draw: 'Draw', Away: `${first.awayTeam} wins` };
+      if (a.status !== "PENDING" && b.status === "PENDING") return 1;
+
+      // Pending matches sorted by kickoff time ascending
+      if (a.status === "PENDING" && b.status === "PENDING") {
+        const aTime =
+          eventCache[a.fid]?.commence_time || a.first.commenceTime || 0;
+
+        const bTime =
+          eventCache[b.fid]?.commence_time || b.first.commenceTime || 0;
+
+        return new Date(aTime) - new Date(bTime);
+      }
+
+      // Settled matches sorted newest first
+      const aTime = a.first.settledAt || a.first.commenceTime || 0;
+
+      const bTime = b.first.settledAt || b.first.commenceTime || 0;
+
+      return new Date(bTime) - new Date(aTime);
+    });
+
+    for (const {
+      fid,
+      tranches,
+      first,
+      totalStake,
+      totalNet,
+      status,
+    } of groups) {
+      const statusColor =
+        status === "WON"
+          ? "#22c55e"
+          : status === "LOST"
+            ? "#ef4444"
+            : "#f59e0b";
+      const matchTitle =
+        first.homeTeam && first.awayTeam
+          ? `${first.homeTeam} vs ${first.awayTeam}`
+          : first.leagueName;
+      const selectionMap = {
+        Home: `${first.homeTeam} wins`,
+        Draw: "Draw",
+        Away: `${first.awayTeam} wins`,
+      };
       const selLabel = selectionMap[first.selection] || first.selection;
       const ev = eventCache[fid];
-      const kickoffLine = ev
-        ? `<div style="font-size:11px;color:#6b7280;margin-top:1px;">${moment(ev.commence_time).tz(TIMEZONE).format('DD MMM, HH:mm')} IST</div>`
-        : '';
-      const netLabel = status !== 'PENDING'
-        ? `<span style="font-weight:bold;color:${totalNet >= 0 ? '#22c55e' : '#ef4444'};">${totalNet >= 0 ? '+' : ''}${totalNet.toFixed(1)} pts</span>`
-        : `<span style="color:#f59e0b;">Pending settlement</span>`;
+      // const kickoffLine = ev
+      //   ? `<div style="font-size:11px;color:#6b7280;margin-top:1px;">${moment(ev.commence_time).tz(TIMEZONE).format("DD MMM, HH:mm")} IST</div>`
+      //   : "";
+      const netLabel =
+        status !== "PENDING"
+          ? `<span style="font-weight:bold;color:${totalNet >= 0 ? "#22c55e" : "#ef4444"};">${totalNet >= 0 ? "+" : ""}${totalNet.toFixed(1)} pts</span>`
+          : `<span style="color:#f59e0b;">Pending settlement</span>`;
 
       // Tranche breakdown rows
-      const selectionMap2 = { Home: first.homeTeam, Draw: 'Draw', Away: first.awayTeam };
-      const trancheRows = tranches.map((t, i) => `
-        <tr style="border-top:1px solid #1f2937;">
-          <td style="padding:3px 0;color:#9ca3af;">#${i + 1}</td>
-          <td style="padding:3px 4px;color:#e5e7eb;">${selectionMap2[t.selection] || t.selection}</td>
-          <td style="padding:3px 4px;text-align:right;color:#a78bfa;">${t.stake} pts</td>
-          <td style="padding:3px 0;text-align:right;color:#22c55e;">${t.lockedOdds}x</td>
-        </tr>`).join('');
+      const selectionMap2 = {
+        Home: first.homeTeam,
+        Draw: "Draw",
+        Away: first.awayTeam,
+      };
+      const trancheRows = tranches
+        .map((t, i) => {
+          const prediction =
+            t.predictedHomeGoals != null && t.predictedAwayGoals != null
+              ? `${t.predictedHomeGoals}-${t.predictedAwayGoals}`
+              : "-";
+
+          const predictionLabel = t.scoreBoostApplied
+            ? `${prediction} 🎯`
+            : prediction;
+
+          const oddsLabel = t.scoreBoostApplied
+            ? `${t.lockedOdds}x +1`
+            : `${t.lockedOdds}x`;
+
+          const oddsColor = t.scoreBoostApplied ? "#fbbf24" : "#22c55e";
+
+          const predictionColor = t.scoreBoostApplied ? "#fbbf24" : "#9ca3af";
+
+          return `
+      <tr style="border-top:1px solid #1f2937;">
+        <td style="padding:3px 0;color:#9ca3af;">
+          #${i + 1}
+        </td>
+
+        <td style="padding:3px 4px;color:#e5e7eb;">
+          ${selectionMap2[t.selection] || t.selection}
+        </td>
+
+        <td style="padding:3px 4px;text-align:right;color:#a78bfa;">
+          ${t.stake} pts
+        </td>
+
+        <td style="
+          padding:3px 4px;
+          text-align:right;
+          color:${oddsColor};
+          font-weight:${t.scoreBoostApplied ? "700" : "400"};
+        ">
+          ${oddsLabel}
+        </td>
+
+        <td style="
+          padding:3px 0;
+          text-align:right;
+          color:${predictionColor};
+          font-weight:${t.scoreBoostApplied ? "700" : "400"};
+        ">
+          ${predictionLabel}
+        </td>
+      </tr>
+    `;
+        })
+        .join("");
+
+      const resultLabel =
+        first.result === "Home"
+          ? `${first.homeTeam} wins`
+          : first.result === "Away"
+            ? `${first.awayTeam} wins`
+            : first.result === "Draw"
+              ? "Draw"
+              : null;
+
+      const matchTime = moment(
+        eventCache[fid]?.commence_time || first.commenceTime,
+      )
+        .tz(TIMEZONE)
+        .format("DD MMM YYYY, HH:mm");
+
+      const kickoffLine = `
+        <div style="
+          font-size:11px;
+          color:#9ca3af;
+          margin-top:4px;
+        ">
+          📅 ${matchTime} IST
+        </div>
+      `;
 
       const cardInner = `
         <div style="display:flex;justify-content:space-between;align-items:flex-start;">
@@ -2406,20 +2804,32 @@ app.get('/summary', requireAuth, async (req, res) => {
           Total staked: <strong style="color:#a78bfa;">${totalStake} pts</strong>
         </div>
         <table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:6px;">
-          <thead><tr style="color:#6b7280;">
-            <th style="text-align:left;padding:2px 0;">Tranche</th>
-            <th style="text-align:left;padding:2px 4px;">Pick</th>
-            <th style="text-align:right;padding:2px 4px;">Stake</th>
-            <th style="text-align:right;padding:2px 0;">Odds</th>
-          </tr></thead>
+          <thead>
+            <tr style="color:#6b7280;">
+              <th style="text-align:left;padding:2px 0;">#</th>
+              <th style="text-align:left;padding:2px 4px;">Pick</th>
+              <th style="text-align:right;padding:2px 4px;">Stake</th>
+              <th style="text-align:right;padding:2px 4px;">Odds</th>
+              <th style="text-align:right;padding:2px 0;">Prediction</th>
+            </tr>
+          </thead>
           <tbody>${trancheRows}</tbody>
         </table>
-        ${first.result ? `<div style="font-size:12px;color:#9ca3af;margin-top:6px;">Result: <strong style="color:#e5e7eb;">${first.result}</strong></div>` : ''}
+        ${
+          resultLabel
+            ? `<div style="font-size:12px;color:#9ca3af;margin-top:6px;">
+                Result:
+                <strong style="color:#e5e7eb;">
+                  ${resultLabel}
+                </strong>
+              </div>`
+            : ""
+        }
         <div style="font-size:13px;margin-top:6px;">${netLabel}</div>
-        ${status === 'PENDING' ? `<div style="font-size:11px;color:#6b7280;margin-top:6px;">Tap to add another tranche →</div>` : ''}
+        ${status === "PENDING" ? `<div style="font-size:11px;color:#6b7280;margin-top:6px;">Tap to add another tranche →</div>` : ""}
       `;
 
-      if (status === 'PENDING') {
+      if (status === "PENDING") {
         html += `<a href="/match?id=${fid}" style="display:block;text-decoration:none;color:inherit;">
           <div class="card" style="border-color:#374151;">${cardInner}</div>
         </a>`;
@@ -2429,13 +2839,13 @@ app.get('/summary', requireAuth, async (req, res) => {
     }
   }
 
-  html += htmlFooter('summary');
+  html += htmlFooter("summary");
   res.send(html);
 });
 
 // RULES – read-only explanation of results & settlement logic
-app.get('/rules', requireAuth, (req, res) => {
-  let html = htmlHeader('Rules - No Betting Zone');
+app.get("/rules", requireAuth, (req, res) => {
+  let html = htmlHeader("Rules - No Betting Zone");
   html += `
     <h2 style="margin-bottom:4px;">How It Works</h2>
     <p style="color:#9ca3af;font-size:13px;margin-top:0;margin-bottom:20px;">Rules, results logic &amp; settlement explained</p>
@@ -2505,12 +2915,12 @@ app.get('/rules', requireAuth, (req, res) => {
       </ul>
     </div>
   `;
-  html += htmlFooter('rules');
+  html += htmlFooter("rules");
   res.send(html);
 });
 
 async function getResultsData() {
-  const logKeys = await db.list('settlementLog:');
+  const logKeys = await db.list("settlementLog:");
   const logs = [];
 
   for (const key of logKeys) {
@@ -2518,17 +2928,16 @@ async function getResultsData() {
     if (log) logs.push(log);
   }
 
-  logs.sort((a, b) =>
-    moment(b.settledAt, 'DD MMM YYYY, HH:mm z').valueOf() -
-    moment(a.settledAt, 'DD MMM YYYY, HH:mm z').valueOf()
+  logs.sort(
+    (a, b) =>
+      moment(b.settledAt, "DD MMM YYYY, HH:mm z").valueOf() -
+      moment(a.settledAt, "DD MMM YYYY, HH:mm z").valueOf(),
   );
 
-  const userKeys = await db.list('user:');
-  const users = (
-    await Promise.all(
-        userKeys.map(key => db.get(key))
-    )
-).filter(Boolean);
+  const userKeys = await db.list("user:");
+  const users = (await Promise.all(userKeys.map((key) => db.get(key)))).filter(
+    Boolean,
+  );
 
   users.sort((a, b) => b.totalNetPoints - a.totalNetPoints);
 
@@ -2537,27 +2946,18 @@ async function getResultsData() {
 
 // RESULTS – leaderboard + all settled matches inline
 // RESULTS – leaderboard + all settled matches inline
-app.get('/results', requireAuth, async (req, res) => {
+app.get("/results", requireAuth, async (req, res) => {
   console.time("results route");
 
-  if (!resultsCache)
-    await rebuildResultsCache();
+  if (!resultsCache) await rebuildResultsCache();
 
-const {
-    logs,
-    users,
-    userStats,
-    lastUpdated,
-    nextUpdateStr
-} = resultsCache;
-
-  
+  const { logs, users, userStats, lastUpdated, nextUpdateStr } = resultsCache;
 
   // 3. Build HTML
-  let html = htmlHeader('Results - No Betting Zone');
+  let html = htmlHeader("Results - No Betting Zone");
   html += `<h2>Results</h2>`;
   html += `<p style="font-size:11px;color:#6b7280;margin-top:-4px;margin-bottom:6px;">
-    ${lastUpdated ? `Last updated: <strong style="color:#9ca3af;">${lastUpdated}</strong> &nbsp;·&nbsp; ` : ''}
+    ${lastUpdated ? `Last updated: <strong style="color:#9ca3af;">${lastUpdated}</strong> &nbsp;·&nbsp; ` : ""}
     Next scheduled update: <strong style="color:#9ca3af;">${nextUpdateStr}</strong>
   </p>`;
   html += `<p style="font-size:11px;color:#6b7280;margin-bottom:14px;">
@@ -2604,47 +3004,30 @@ const {
 
       <tbody>
 
-      ${users.map((u, i) => {
-
-          const name =
-              u.displayName ||
-              u.userId ||
-              u.name ||
-              "Unknown";
+      ${users
+        .map((u, i) => {
+          const name = u.displayName || u.userId || u.name || "Unknown";
 
           const net = Number(u.totalNetPoints || 0);
 
-          const stats =
-          userStats[u.userId] || {
-              wins: 0,
-              losses: 0,
-              matches: 0
+          const stats = userStats[u.userId] || {
+            wins: 0,
+            losses: 0,
+            matches: 0,
           };
 
-      const winPct =
-          stats.matches
-              ? ((stats.wins / stats.matches) * 100).toFixed(1)
-              : "0.0";
+          const winPct = stats.matches
+            ? ((stats.wins / stats.matches) * 100).toFixed(1)
+            : "0.0";
 
           const medal =
-              i === 0 ? "🥇"
-              : i === 1 ? "🥈"
-              : i === 2 ? "🥉"
-              : "#" + (i + 1);
+            i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : "#" + (i + 1);
 
           const netColor =
-              net > 0
-                  ? "#22c55e"
-                  : net < 0
-                  ? "#ef4444"
-                  : "#e5e7eb";
+            net > 0 ? "#22c55e" : net < 0 ? "#ef4444" : "#e5e7eb";
 
           const pctColor =
-              winPct >= 70
-                  ? "#22c55e"
-                  : winPct >= 50
-                  ? "#f59e0b"
-                  : "#ef4444";
+            winPct >= 70 ? "#22c55e" : winPct >= 50 ? "#f59e0b" : "#ef4444";
 
           return `
 
@@ -2677,8 +3060,8 @@ const {
           </tr>
 
           `;
-
-      }).join("")}
+        })
+        .join("")}
 
       </tbody>
 
@@ -2695,9 +3078,14 @@ const {
     html += `<p style="color:#9ca3af;">No settled matches yet. Check back after results are in.</p>`;
   } else {
     for (const log of logs) {
-      const resultLabel = log.result === 'Home' ? log.homeTeam + ' wins'
-        : log.result === 'Away' ? log.awayTeam + ' wins' : 'Draw';
-      const selMap = s => s === 'Home' ? log.homeTeam : s === 'Away' ? log.awayTeam : 'Draw';
+      const resultLabel =
+        log.result === "Home"
+          ? log.homeTeam + " wins"
+          : log.result === "Away"
+            ? log.awayTeam + " wins"
+            : "Draw";
+      const selMap = (s) =>
+        s === "Home" ? log.homeTeam : s === "Away" ? log.awayTeam : "Draw";
       const sorted = [...log.entries].sort((a, b) => b.netPoints - a.netPoints);
       html += `
         <div class="card" style="margin-bottom:10px;">
@@ -2713,24 +3101,52 @@ const {
               <th style="text-align:right;padding:3px 4px;">Stake</th>
               <th style="text-align:right;padding:3px 4px;">Odds</th>
               <th style="text-align:right;padding:3px 0;">Net</th>
+              <th style="text-align:right;padding:3px 0;">Prediction</th>
             </tr></thead>
             <tbody>
-              ${sorted.map(e => {
-                const col = e.status === 'WON' ? '#22c55e' : '#ef4444';
-                return `<tr style="border-bottom:1px solid #0f172a;">
+              ${sorted
+                .map((e) => {
+                  const col = e.status === "WON" ? "#22c55e" : "#ef4444";
+                  const predictionColor = e.scoreBoostApplied
+                    ? "#fbbf24"
+                    : "#9ca3af";
+                  return `<tr style="border-bottom:1px solid #0f172a;">
                   <td style="padding:4px 0;color:#e5e7eb;">${e.user}</td>
                   <td style="padding:4px 4px;color:#9ca3af;">${selMap(e.selection)}</td>
                   <td style="padding:4px 4px;text-align:right;color:#a78bfa;">${e.stake}</td>
-                  <td style="padding:4px 4px;text-align:right;color:#9ca3af;">${e.lockedOdds}x</td>
-                  <td style="padding:4px 0;text-align:right;font-weight:600;color:${col};">${e.netPoints >= 0 ? '+' : ''}${Number(e.netPoints).toFixed(1)}</td>
+                  <td style="
+                      padding:4px 0;
+                      text-align:right;
+                      color:${predictionColor};
+                      font-weight:${e.scoreBoostApplied ? "700" : "400"};
+                  ">
+                      ${e.lockedOdds}x
+                      ${e.scoreBoostApplied ? '<span title="Exact score hit">+1</span>' : ""}
+                  </td>
+                  <td style="padding:4px 0;text-align:right;font-weight:600;color:${col};">${e.netPoints >= 0 ? "+" : ""}${Number(e.netPoints).toFixed(1)}</td>
+                  <td style="
+                      padding:4px 0;
+                      text-align:right;
+                      color:${predictionColor};
+                      font-weight:${e.scoreBoostApplied ? "700" : "400"};
+                  ">
+                      ${
+                        e.predictedHomeGoals != null &&
+                        e.predictedAwayGoals != null
+                          ? `${e.predictedHomeGoals}-${e.predictedAwayGoals}`
+                          : "-"
+                      }
+                      ${e.scoreBoostApplied && e.predictedHomeGoals != null ? " 🎯" : ""}
+                  </td>
                 </tr>`;
-              }).join('')}
+                })
+                .join("")}
             </tbody>
           </table>
         </div>
         `;
     }
-html += `
+    html += `
     <script>
 
 const sortState = {};
@@ -2791,48 +3207,62 @@ function sortTable(col, type) {
 `;
   }
 
-  html += htmlFooter('results');
+  html += htmlFooter("results");
   res.send(html);
   console.timeEnd("results route");
 });
 
 // SETTLE – redirect to admin
-app.get('/settle', (req, res) => res.redirect('/admin'));
+app.get("/settle", (req, res) => res.redirect("/admin"));
 
 // ALT RESULTS 1 – Fixed-odds settlement with House account
-app.get('/alt-results-1', requireAuth, async (req, res) => {
-  const keys = await db.list('settlementLog:');
+app.get("/alt-results-1", requireAuth, async (req, res) => {
+  const keys = await db.list("settlementLog:");
   const logs = [];
-  for (const key of keys) { const l = await db.get(key); if (l) logs.push(l); }
-  logs.sort((a, b) => moment(b.settledAt, 'DD MMM YYYY, HH:mm z').valueOf() - moment(a.settledAt, 'DD MMM YYYY, HH:mm z').valueOf());
+  for (const key of keys) {
+    const l = await db.get(key);
+    if (l) logs.push(l);
+  }
+  logs.sort(
+    (a, b) =>
+      moment(b.settledAt, "DD MMM YYYY, HH:mm z").valueOf() -
+      moment(a.settledAt, "DD MMM YYYY, HH:mm z").valueOf(),
+  );
 
   const leaderboard = {};
   let houseTotalNet = 0;
 
-  const matchData = logs.map(log => {
+  const matchData = logs.map((log) => {
     let totalPaidToWinners = 0;
-    const entries = log.entries.map(e => {
-      if (e.status === 'WON') {
+    const entries = log.entries.map((e) => {
+      if (e.status === "WON") {
         const payout = Math.round(e.stake * parseFloat(e.lockedOdds) * 10) / 10;
         const net = Math.round((payout - e.stake) * 10) / 10;
-        totalPaidToWinners = Math.round((totalPaidToWinners + payout) * 10) / 10;
-        leaderboard[e.user] = Math.round(((leaderboard[e.user] || 0) + net) * 10) / 10;
+        totalPaidToWinners =
+          Math.round((totalPaidToWinners + payout) * 10) / 10;
+        leaderboard[e.user] =
+          Math.round(((leaderboard[e.user] || 0) + net) * 10) / 10;
         return { ...e, altPayout: payout, altNet: net };
       } else {
-        leaderboard[e.user] = Math.round(((leaderboard[e.user] || 0) - e.stake) * 10) / 10;
+        leaderboard[e.user] =
+          Math.round(((leaderboard[e.user] || 0) - e.stake) * 10) / 10;
         return { ...e, altPayout: 0, altNet: -e.stake };
       }
     });
-    const houseDelta = Math.round((log.totalStaked - totalPaidToWinners) * 10) / 10;
+    const houseDelta =
+      Math.round((log.totalStaked - totalPaidToWinners) * 10) / 10;
     houseTotalNet = Math.round((houseTotalNet + houseDelta) * 10) / 10;
     return { log, entries, houseDelta };
   });
 
-  const lbEntries = Object.entries(leaderboard).map(([user, net]) => ({ user, net }));
-  lbEntries.push({ user: 'House 🏦', net: houseTotalNet, isHouse: true });
+  const lbEntries = Object.entries(leaderboard).map(([user, net]) => ({
+    user,
+    net,
+  }));
+  lbEntries.push({ user: "House 🏦", net: houseTotalNet, isHouse: true });
   lbEntries.sort((a, b) => b.net - a.net);
 
-  let html = htmlHeader('Alt Results 1 - No Betting Zone');
+  let html = htmlHeader("Alt Results 1 - No Betting Zone");
   html += `
     <h2 style="margin-bottom:4px;">Alt Results 1</h2>
     <p style="color:#9ca3af;font-size:13px;margin-top:0;margin-bottom:4px;">Fixed-odds: winners receive stake × locked odds; losers forfeit stake. Surplus/deficit goes to House.</p>
@@ -2849,15 +3279,28 @@ app.get('/alt-results-1', requireAuth, async (req, res) => {
           <th style="text-align:right;padding:4px 0;">Net Pts</th>
         </tr></thead>
         <tbody>
-          ${lbEntries.map((e, i) => {
-            const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '#' + (i + 1);
-            const col = e.isHouse ? '#f59e0b' : e.net >= 0 ? '#22c55e' : '#ef4444';
-            return `<tr style="border-bottom:1px solid #1f2937;">
+          ${lbEntries
+            .map((e, i) => {
+              const medal =
+                i === 0
+                  ? "🥇"
+                  : i === 1
+                    ? "🥈"
+                    : i === 2
+                      ? "🥉"
+                      : "#" + (i + 1);
+              const col = e.isHouse
+                ? "#f59e0b"
+                : e.net >= 0
+                  ? "#22c55e"
+                  : "#ef4444";
+              return `<tr style="border-bottom:1px solid #1f2937;">
               <td style="padding:6px 0;color:#9ca3af;">${medal}</td>
-              <td style="padding:6px 6px;color:${e.isHouse ? '#f59e0b' : '#e5e7eb'};">${e.user}</td>
-              <td style="padding:6px 0;text-align:right;font-weight:700;color:${col};">${e.net >= 0 ? '+' : ''}${e.net.toFixed(1)}</td>
+              <td style="padding:6px 6px;color:${e.isHouse ? "#f59e0b" : "#e5e7eb"};">${e.user}</td>
+              <td style="padding:6px 0;text-align:right;font-weight:700;color:${col};">${e.net >= 0 ? "+" : ""}${e.net.toFixed(1)}</td>
             </tr>`;
-          }).join('')}
+            })
+            .join("")}
         </tbody>
       </table>
     </div>
@@ -2866,9 +3309,14 @@ app.get('/alt-results-1', requireAuth, async (req, res) => {
   `;
 
   for (const { log, entries, houseDelta } of matchData) {
-    const resultLabel = log.result === 'Home' ? log.homeTeam + ' wins'
-      : log.result === 'Away' ? log.awayTeam + ' wins' : 'Draw';
-    const selMap = s => s === 'Home' ? log.homeTeam : s === 'Away' ? log.awayTeam : 'Draw';
+    const resultLabel =
+      log.result === "Home"
+        ? log.homeTeam + " wins"
+        : log.result === "Away"
+          ? log.awayTeam + " wins"
+          : "Draw";
+    const selMap = (s) =>
+      s === "Home" ? log.homeTeam : s === "Away" ? log.awayTeam : "Draw";
     const sorted = [...entries].sort((a, b) => b.altNet - a.altNet);
     html += `
       <div class="card" style="margin-bottom:10px;">
@@ -2876,7 +3324,7 @@ app.get('/alt-results-1', requireAuth, async (req, res) => {
         <div style="font-size:11px;color:#6b7280;margin-top:2px;">
           ${log.settledAt} &nbsp;·&nbsp; Result: <strong style="color:#e5e7eb;">${resultLabel}</strong>
           &nbsp;·&nbsp; Pool: ${log.totalStaked} pts
-          &nbsp;·&nbsp; House: <span style="color:${houseDelta >= 0 ? '#f59e0b' : '#ef4444'};font-weight:600;">${houseDelta >= 0 ? '+' : ''}${houseDelta.toFixed(1)}</span>
+          &nbsp;·&nbsp; House: <span style="color:${houseDelta >= 0 ? "#f59e0b" : "#ef4444"};font-weight:600;">${houseDelta >= 0 ? "+" : ""}${houseDelta.toFixed(1)}</span>
         </div>
         <table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:8px;">
           <thead><tr style="color:#6b7280;border-bottom:1px solid #1f2937;">
@@ -2887,54 +3335,61 @@ app.get('/alt-results-1', requireAuth, async (req, res) => {
             <th style="text-align:right;padding:3px 0;">Net</th>
           </tr></thead>
           <tbody>
-            ${sorted.map(e => {
-              const col = e.status === 'WON' ? '#22c55e' : '#ef4444';
-              return `<tr style="border-bottom:1px solid #0f172a;">
+            ${sorted
+              .map((e) => {
+                const col = e.status === "WON" ? "#22c55e" : "#ef4444";
+                return `<tr style="border-bottom:1px solid #0f172a;">
                 <td style="padding:4px 0;color:#e5e7eb;">${e.user}</td>
                 <td style="padding:4px 4px;color:#9ca3af;">${selMap(e.selection)}</td>
                 <td style="padding:4px 4px;text-align:right;color:#a78bfa;">${e.stake}</td>
                 <td style="padding:4px 4px;text-align:right;color:#9ca3af;">${e.lockedOdds}x</td>
-                <td style="padding:4px 0;text-align:right;font-weight:600;color:${col};">${e.altNet >= 0 ? '+' : ''}${e.altNet.toFixed(1)}</td>
+                <td style="padding:4px 0;text-align:right;font-weight:600;color:${col};">${e.altNet >= 0 ? "+" : ""}${e.altNet.toFixed(1)}</td>
               </tr>`;
-            }).join('')}
+              })
+              .join("")}
           </tbody>
         </table>
       </div>`;
   }
 
-  html += htmlFooter('results');
+  html += htmlFooter("results");
   res.send(html);
 });
 
 // ADMIN – unified admin panel
-app.get('/admin', async (req, res) => {
+app.get("/admin", async (req, res) => {
   // Consume one-time unlock flag — every fresh page visit requires the password
   req.session.isAdmin = req.session.isAdminUnlocked || false;
   delete req.session.isAdminUnlocked;
 
-  const lastRun = (await db.get('dailyJob:lastRun')) || 'Never';
+  const lastRun = (await db.get("dailyJob:lastRun")) || "Never";
   const allBets = await getBets();
-  const settlementLogKeys = await db.list('settlementLog:');
+  const settlementLogKeys = await db.list("settlementLog:");
   const logCount = settlementLogKeys.length;
   const settledFixtures = [];
   for (const key of settlementLogKeys) {
     const sl = await db.get(key);
-    if (sl) settledFixtures.push({ id: sl.fixtureId, label: `${sl.homeTeam} vs ${sl.awayTeam} — ${sl.settledAt}`, currentResult: sl.result });
+    if (sl)
+      settledFixtures.push({
+        id: sl.fixtureId,
+        label: `${sl.homeTeam} vs ${sl.awayTeam} — ${sl.settledAt}`,
+        currentResult: sl.result,
+      });
   }
   settledFixtures.sort((a, b) => a.label.localeCompare(b.label));
-  const pending = allBets.filter(b => b.status === 'PENDING').length;
-  const won = allBets.filter(b => b.status === 'WON').length;
-  const lost = allBets.filter(b => b.status === 'LOST').length;
+  const pending = allBets.filter((b) => b.status === "PENDING").length;
+  const won = allBets.filter((b) => b.status === "WON").length;
+  const lost = allBets.filter((b) => b.status === "LOST").length;
 
-  let html = htmlHeader('Admin - No Betting Zone');
+  let html = htmlHeader("Admin - No Betting Zone");
   html += `<h2>Admin</h2>`;
 
   // Status cards — always visible
   html += `
     <div class="card">
       <div style="font-size:13px;">Last job ran: <strong>${lastRun}</strong></div>
-      <div style="font-size:13px;margin-top:4px;">Snapshot: <strong>${snapshotMeta ? snapshotMeta.fetchedAt : 'Not yet fetched'}</strong></div>
-      ${snapshotMeta ? `<div style="font-size:12px;color:#6b7280;margin-top:2px;">Credits left: ${snapshotMeta.creditsLeft}</div>` : ''}
+      <div style="font-size:13px;margin-top:4px;">Snapshot: <strong>${snapshotMeta ? snapshotMeta.fetchedAt : "Not yet fetched"}</strong></div>
+      ${snapshotMeta ? `<div style="font-size:12px;color:#6b7280;margin-top:2px;">Credits left: ${snapshotMeta.creditsLeft}</div>` : ""}
     </div>
     <div class="card">
       <div style="font-size:13px;">Pending bets: <strong>${pending}</strong></div>
@@ -2944,9 +3399,9 @@ app.get('/admin', async (req, res) => {
   `;
 
   if (!req.session.isAdmin) {
-    const err = req.query.err || '';
+    const err = req.query.err || "";
     html += `
-      ${err ? `<p style="font-size:13px;color:#ef4444;">${err}</p>` : ''}
+      ${err ? `<p style="font-size:13px;color:#ef4444;">${err}</p>` : ""}
       <p style="font-size:13px;color:#9ca3af;margin-bottom:12px;">Enter admin password to unlock tools.</p>
       <form method="POST" action="/admin/login">
         <input type="password" name="password" placeholder="Admin password" required autocomplete="current-password"
@@ -2955,7 +3410,7 @@ app.get('/admin', async (req, res) => {
       </form>
     `;
   } else {
-    const pwMsg = req.query.pwMsg || '';
+    const pwMsg = req.query.pwMsg || "";
 
     // // Fetch pending OTPs
     // const now = Date.now();
@@ -2970,8 +3425,8 @@ app.get('/admin', async (req, res) => {
     // }
 
     // ======================================================
-// Fetch ALL pending OTPs (Login + Password Reset)
-// ======================================================
+    // Fetch ALL pending OTPs (Login + Password Reset)
+    // ======================================================
 
     const now = Date.now();
     const otpRows = [];
@@ -2983,35 +3438,29 @@ app.get('/admin', async (req, res) => {
     const loginOtpKeys = await db.list("otp:");
 
     for (const key of loginOtpKeys) {
+      const entry = await db.get(key);
 
-        const entry = await db.get(key);
+      if (!entry) continue;
 
-        if (!entry) continue;
+      const minsLeft = Math.ceil((entry.expiresAt - now) / 60000);
 
-        const minsLeft = Math.ceil(
-            (entry.expiresAt - now) / 60000
-        );
+      if (minsLeft <= 0) continue;
 
-        if (minsLeft <= 0) continue;
+      otpRows.push({
+        type: "Login",
 
-        otpRows.push({
+        key,
 
-            type: "Login",
+        email: entry.email || key.replace("otp:", ""),
 
-            key,
+        userId: entry.userId || "-",
 
-            email: entry.email || key.replace("otp:", ""),
+        otp: entry.otp,
 
-            userId: entry.userId || "-",
+        minsLeft,
 
-            otp: entry.otp,
-
-            minsLeft,
-
-            expiresAt: entry.expiresAt
-
-        });
-
+        expiresAt: entry.expiresAt,
+      });
     }
 
     // --------------------
@@ -3021,42 +3470,34 @@ app.get('/admin', async (req, res) => {
     const resetOtpKeys = await db.list("reset-otp:");
 
     for (const key of resetOtpKeys) {
+      const entry = await db.get(key);
 
-        const entry = await db.get(key);
+      if (!entry) continue;
 
-        if (!entry) continue;
+      const minsLeft = Math.ceil((entry.expiresAt - now) / 60000);
 
-        const minsLeft = Math.ceil(
-            (entry.expiresAt - now) / 60000
-        );
+      if (minsLeft <= 0) continue;
 
-        if (minsLeft <= 0) continue;
+      otpRows.push({
+        type: "Password Reset",
 
-        otpRows.push({
+        key,
 
-            type: "Password Reset",
+        email: entry.email,
 
-            key,
+        userId: entry.userId || "-",
 
-            email: entry.email,
+        otp: entry.otp,
 
-            userId: entry.userId || "-",
+        minsLeft,
 
-            otp: entry.otp,
-
-            minsLeft,
-
-            expiresAt: entry.expiresAt
-
-        });
-
+        expiresAt: entry.expiresAt,
+      });
     }
 
     // Show earliest expiry first
 
-    otpRows.sort(
-        (a, b) => a.expiresAt - b.expiresAt
-    );
+    otpRows.sort((a, b) => a.expiresAt - b.expiresAt);
 
     html += `
 <div class="card" style="margin-bottom:16px;">
@@ -3069,11 +3510,11 @@ app.get('/admin', async (req, res) => {
         Last rebuilt:
         <strong style="color:#e5e7eb;">
             ${
-                resultsCacheUpdated
-                    ? moment(resultsCacheUpdated)
-                        .tz(TIMEZONE)
-                        .format("DD MMM YYYY, HH:mm:ss z")
-                    : "Never"
+              resultsCacheUpdated
+                ? moment(resultsCacheUpdated)
+                    .tz(TIMEZONE)
+                    .format("DD MMM YYYY, HH:mm:ss z")
+                : "Never"
             }
         </strong>
     </div>
@@ -3127,22 +3568,31 @@ app.get('/admin', async (req, res) => {
       <hr style="border-color:#1f2937;margin:16px 0;">
       <h3 style="font-size:14px;color:#9ca3af;">Manual Settlement</h3>
       ${(() => {
-        const manualMsg = req.query.manualMsg || '';
-        const feedback = manualMsg === 'ok'
-          ? `<p style="font-size:13px;color:#22c55e;margin-bottom:8px;">✓ Fixture settled successfully.</p>`
-          : manualMsg ? `<p style="font-size:13px;color:#ef4444;margin-bottom:8px;">${manualMsg}</p>` : '';
+        const manualMsg = req.query.manualMsg || "";
+        const feedback =
+          manualMsg === "ok"
+            ? `<p style="font-size:13px;color:#22c55e;margin-bottom:8px;">✓ Fixture settled successfully.</p>`
+            : manualMsg
+              ? `<p style="font-size:13px;color:#ef4444;margin-bottom:8px;">${manualMsg}</p>`
+              : "";
 
         // Gather distinct pending fixtures from allBets
         const pendingFixtures = [];
         const seen = new Set();
-        for (const b of allBets.filter(b => b.status === 'PENDING')) {
+        for (const b of allBets.filter((b) => b.status === "PENDING")) {
           if (!seen.has(b.fixtureId)) {
             seen.add(b.fixtureId);
-            const matchName = b.homeTeam && b.awayTeam ? `${b.homeTeam} vs ${b.awayTeam}` : b.fixtureId;
+            const matchName =
+              b.homeTeam && b.awayTeam
+                ? `${b.homeTeam} vs ${b.awayTeam}`
+                : b.fixtureId;
             const dateStr = b.commenceTime
-              ? moment(b.commenceTime).tz(TIMEZONE).format('DD MMM, HH:mm')
-              : '?';
-            pendingFixtures.push({ id: b.fixtureId, label: `${matchName} — ${dateStr} IST` });
+              ? moment(b.commenceTime).tz(TIMEZONE).format("DD MMM, HH:mm")
+              : "?";
+            pendingFixtures.push({
+              id: b.fixtureId,
+              label: `${matchName} — ${dateStr} IST`,
+            });
           }
         }
 
@@ -3154,7 +3604,7 @@ app.get('/admin', async (req, res) => {
           <p style="font-size:12px;color:#9ca3af;margin-bottom:10px;">Override API Football and settle a fixture manually.</p>
           <form method="POST" action="/admin/manual-settle">
             <select name="fixtureId" required style="width:100%;max-width:340px;margin-bottom:8px;padding:8px;background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:6px;font-size:13px;">
-              ${pendingFixtures.map(f => `<option value="${f.id}">${f.label}</option>`).join('')}
+              ${pendingFixtures.map((f) => `<option value="${f.id}">${f.label}</option>`).join("")}
             </select>
             <br>
             <div style="display:flex;gap:8px;margin-top:6px;max-width:340px;">
@@ -3168,6 +3618,33 @@ app.get('/admin', async (req, res) => {
                 <input type="radio" name="result" value="Away" style="margin-right:4px;">Away win
               </label>
             </div>
+            <div style="margin-top:12px;">
+  <div style="font-size:12px;color:#9ca3af;margin-bottom:6px;">
+    Final Score
+  </div>
+
+  <div style="display:flex;align-items:center;gap:8px;">
+    <input
+      type="number"
+      name="actualHomeGoals"
+      min="0"
+      max="20"
+      required
+      style="width:70px;text-align:center;"
+    />
+
+    <span>-</span>
+
+    <input
+      type="number"
+      name="actualAwayGoals"
+      min="0"
+      max="20"
+      required
+      style="width:70px;text-align:center;"
+    />
+  </div>
+</div>
             <button type="submit" style="margin-top:10px;background:#b45309;border-color:#b45309;">Settle fixture</button>
           </form>`;
       })()}
@@ -3177,10 +3654,13 @@ app.get('/admin', async (req, res) => {
       <hr style="border-color:#1f2937;margin:16px 0;">
       <h3 style="font-size:14px;color:#9ca3af;">Re-settle Settled Fixture</h3>
       ${(() => {
-        const rsMsg = req.query.resettleMsg || '';
-        const rsFeedback = rsMsg === 'ok'
-          ? `<p style="font-size:13px;color:#22c55e;margin-bottom:8px;">✓ Fixture re-settled successfully.</p>`
-          : rsMsg ? `<p style="font-size:13px;color:#ef4444;margin-bottom:8px;">${rsMsg}</p>` : '';
+        const rsMsg = req.query.resettleMsg || "";
+        const rsFeedback =
+          rsMsg === "ok"
+            ? `<p style="font-size:13px;color:#22c55e;margin-bottom:8px;">✓ Fixture re-settled successfully.</p>`
+            : rsMsg
+              ? `<p style="font-size:13px;color:#ef4444;margin-bottom:8px;">${rsMsg}</p>`
+              : "";
         if (!settledFixtures.length) {
           return `${rsFeedback}<p style="font-size:13px;color:#9ca3af;">No settled fixtures yet.</p>`;
         }
@@ -3188,7 +3668,7 @@ app.get('/admin', async (req, res) => {
           <p style="font-size:12px;color:#9ca3af;margin-bottom:10px;">Reverses the old settlement and recalculates with the new result. Use with care.</p>
           <form method="POST" action="/admin/re-settle">
             <select name="fixtureId" required style="width:100%;max-width:340px;margin-bottom:8px;padding:8px;background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:6px;font-size:13px;">
-              ${settledFixtures.map(f => `<option value="${f.id}">${f.label} [${f.currentResult}]</option>`).join('')}
+              ${settledFixtures.map((f) => `<option value="${f.id}">${f.label} [${f.currentResult}]</option>`).join("")}
             </select>
             <br>
             <div style="display:flex;gap:8px;margin-top:6px;max-width:340px;">
@@ -3212,13 +3692,11 @@ app.get('/admin', async (req, res) => {
         </h3>
 
         ${
-        otpRows.length === 0
-
-        ? `<p style="color:#9ca3af;font-size:13px;">
+          otpRows.length === 0
+            ? `<p style="color:#9ca3af;font-size:13px;">
         No pending OTPs.
         </p>`
-
-        : `
+            : `
 
         <p style="font-size:12px;color:#9ca3af;margin-bottom:10px;">
         Showing Login + Password Reset OTPs
@@ -3242,7 +3720,9 @@ app.get('/admin', async (req, res) => {
 
         </tr>
 
-        ${otpRows.map(r => `
+        ${otpRows
+          .map(
+            (r) => `
 
         <tr style="border-top:1px solid #374151;">
 
@@ -3252,11 +3732,7 @@ app.get('/admin', async (req, res) => {
         padding:3px 8px;
         border-radius:6px;
         font-size:11px;
-        background:${
-        r.type === "Login"
-        ? "#1d4ed8"
-        : "#7c3aed"
-        };
+        background:${r.type === "Login" ? "#1d4ed8" : "#7c3aed"};
         ">
 
         ${r.type}
@@ -3319,7 +3795,9 @@ app.get('/admin', async (req, res) => {
 
         </tr>
 
-        `).join("")}
+        `,
+          )
+          .join("")}
 
         </table>
 
@@ -3333,9 +3811,10 @@ app.get('/admin', async (req, res) => {
       <hr style="border-color:#1f2937;margin:16px 0;">
       <h3 style="font-size:14px;color:#9ca3af;">Clear Pending Bets</h3>
       ${(() => {
-        const clearMsg = req.query.clearMsg || '';
+        const clearMsg = req.query.clearMsg || "";
         const feedback = clearMsg
-          ? `<p style="font-size:13px;color:#22c55e;margin-bottom:8px;">${clearMsg}</p>` : '';
+          ? `<p style="font-size:13px;color:#22c55e;margin-bottom:8px;">${clearMsg}</p>`
+          : "";
         return `${feedback}
           <p style="font-size:12px;color:#9ca3af;margin-bottom:10px;">Removes all PENDING (not-yet-settled) bets so users can re-stake, e.g. after changing stake limits. Already-settled bets are untouched.</p>
           <form method="POST" action="/admin/clear-pending-bets" onsubmit="return confirm('Delete all ${pending} pending bets? This cannot be undone.');">
@@ -3348,7 +3827,7 @@ app.get('/admin', async (req, res) => {
       
       <hr style="border-color:#1f2937;margin:16px 0;">
       <h3 style="font-size:14px;color:#9ca3af;">Change admin password</h3>
-      ${pwMsg ? `<p style="font-size:13px;color:${pwMsg === 'ok' ? '#22c55e' : '#ef4444'};">${pwMsg === 'ok' ? 'Password changed.' : pwMsg}</p>` : ''}
+      ${pwMsg ? `<p style="font-size:13px;color:${pwMsg === "ok" ? "#22c55e" : "#ef4444"};">${pwMsg === "ok" ? "Password changed." : pwMsg}</p>` : ""}
       <form method="POST" action="/admin/change-password">
         <input type="password" name="oldPassword" placeholder="Current password" required autocomplete="current-password"
           style="width:100%;max-width:280px;margin-bottom:8px;">
@@ -3362,17 +3841,18 @@ app.get('/admin', async (req, res) => {
       <hr style="border-color:#1f2937;margin:16px 0;">
       <h3 style="font-size:14px;color:#9ca3af;">Settlement Report</h3>
       ${(() => {
-        const logMsg = req.query.logMsg || '';
-        const feedback = logMsg === 'ok'
-          ? `<p style="font-size:13px;color:#22c55e;margin-bottom:8px;">✓ Compiled report sent to gletterdash@gmail.com</p>`
-          : logMsg
-            ? `<p style="font-size:13px;color:#ef4444;margin-bottom:8px;">${logMsg}</p>`
-            : '';
+        const logMsg = req.query.logMsg || "";
+        const feedback =
+          logMsg === "ok"
+            ? `<p style="font-size:13px;color:#22c55e;margin-bottom:8px;">✓ Compiled report sent to gletterdash@gmail.com</p>`
+            : logMsg
+              ? `<p style="font-size:13px;color:#ef4444;margin-bottom:8px;">${logMsg}</p>`
+              : "";
         if (logCount === 0) {
           return `${feedback}<p style="font-size:13px;color:#9ca3af;">No matches settled yet.</p>`;
         }
         return `${feedback}
-          <p style="font-size:13px;color:#9ca3af;margin-bottom:10px;">${logCount} match${logCount !== 1 ? 'es' : ''} settled so far.</p>
+          <p style="font-size:13px;color:#9ca3af;margin-bottom:10px;">${logCount} match${logCount !== 1 ? "es" : ""} settled so far.</p>
           <form method="POST" action="/admin/send-settlement-logs">
             <button type="submit" style="background:#0369a1;border-color:#0369a1;">📧 Send compiled report →</button>
           </form>
@@ -3383,62 +3863,70 @@ app.get('/admin', async (req, res) => {
     `;
   }
 
-  
-
-  html += htmlFooter('admin');
+  html += htmlFooter("admin");
   res.send(html);
 });
 
 // ADMIN – login (set session)
-app.post('/admin/login', async (req, res) => {
+app.post("/admin/login", async (req, res) => {
   const { password } = req.body || {};
   const adminPassword = await getAdminPassword();
-  if (password !== adminPassword) return res.redirect('/admin?err=Wrong+password.');
-  req.session.isAdminUnlocked = true;  // one-time flag, consumed on next GET /admin
-  res.redirect('/admin');
+  if (password !== adminPassword)
+    return res.redirect("/admin?err=Wrong+password.");
+  req.session.isAdminUnlocked = true; // one-time flag, consumed on next GET /admin
+  res.redirect("/admin");
 });
 
 // ADMIN – lock (clear session)
-app.get('/admin/logout-admin', (req, res) => {
+app.get("/admin/logout-admin", (req, res) => {
   req.session.isAdmin = false;
-  res.redirect('/admin');
+  res.redirect("/admin");
 });
 
 // ADMIN – manual daily job trigger (session-gated)
-app.post('/admin/run-job', async (req, res) => {
-  if (!req.session.isAdmin) return res.redirect('/admin');
+app.post("/admin/run-job", async (req, res) => {
+  if (!req.session.isAdmin) return res.redirect("/admin");
 
   let settleResult, fetchResult;
-  try { settleResult = await settlePendingBets(); } catch (e) { settleResult = { error: e.message }; }
-  try { await fetchAndStoreFixtures(); fetchResult = 'OK'; } catch (e) { fetchResult = e.message; }
-  const today = moment().tz(TIMEZONE).format('YYYY-MM-DD');
-  await db.set('dailyJob:lastRun', today);
+  try {
+    settleResult = await settlePendingBets();
+  } catch (e) {
+    settleResult = { error: e.message };
+  }
+  try {
+    await fetchAndStoreFixtures();
+    fetchResult = "OK";
+  } catch (e) {
+    fetchResult = e.message;
+  }
+  const today = moment().tz(TIMEZONE).format("YYYY-MM-DD");
+  await db.set("dailyJob:lastRun", today);
 
   const settled = settleResult.settled ?? 0;
   const errors = settleResult.errors ?? [];
 
-  let html = htmlHeader('Job Complete - No Betting Zone');
+  let html = htmlHeader("Job Complete - No Betting Zone");
   html += `
     <h2>Daily job complete</h2>
     <div class="card">
       <div style="font-size:13px;">Settlement: <strong style="color:#22c55e;">${settled} bet(s) settled</strong></div>
-      ${errors.length ? `<div style="font-size:12px;color:#ef4444;margin-top:4px;">${errors.join('<br>')}</div>` : ''}
+      ${errors.length ? `<div style="font-size:12px;color:#ef4444;margin-top:4px;">${errors.join("<br>")}</div>` : ""}
     </div>
     <div class="card">
-      <div style="font-size:13px;">Fixture fetch: <strong style="color:${fetchResult === 'OK' ? '#22c55e' : '#ef4444'};">${fetchResult}</strong></div>
-      ${snapshotMeta ? `<div style="font-size:12px;color:#6b7280;margin-top:4px;">Snapshot updated: ${snapshotMeta.fetchedAt} • Credits left: ${snapshotMeta.creditsLeft}</div>` : ''}
+      <div style="font-size:13px;">Fixture fetch: <strong style="color:${fetchResult === "OK" ? "#22c55e" : "#ef4444"};">${fetchResult}</strong></div>
+      ${snapshotMeta ? `<div style="font-size:12px;color:#6b7280;margin-top:4px;">Snapshot updated: ${snapshotMeta.fetchedAt} • Credits left: ${snapshotMeta.creditsLeft}</div>` : ""}
     </div>
     <p><a href="/">View fixtures</a> • <a href="/admin">Back to admin</a></p>
   `;
-  html += htmlFooter('admin');
+  html += htmlFooter("admin");
   res.send(html);
 });
 
 // ADMIN – clear all PENDING (unsettled) bets
-app.post('/admin/clear-pending-bets', async (req, res) => {
-  if (!req.session.isAdmin) return res.redirect('/admin');
+app.post("/admin/clear-pending-bets", async (req, res) => {
+  if (!req.session.isAdmin) return res.redirect("/admin");
   const allBets = await getBets();
-  const remaining = allBets.filter(b => b.status !== 'PENDING');
+  const remaining = allBets.filter((b) => b.status !== "PENDING");
   const removed = allBets.length - remaining.length;
   await updateBets(remaining);
   console.log(`[ClearPendingBets] Removed ${removed} pending bets`);
@@ -3446,182 +3934,169 @@ app.post('/admin/clear-pending-bets', async (req, res) => {
 });
 
 // ADMIN – change admin password
-app.post('/admin/change-password', async (req, res) => {
-  if (!req.session.isAdmin) return res.redirect('/admin');
+app.post("/admin/change-password", async (req, res) => {
+  if (!req.session.isAdmin) return res.redirect("/admin");
   const { oldPassword, newPassword } = req.body || {};
-  if (!oldPassword || !newPassword) return res.redirect('/admin?pwMsg=All+fields+are+required.');
-  if (newPassword.length < 6) return res.redirect('/admin?pwMsg=New+password+must+be+at+least+6+characters.');
+  if (!oldPassword || !newPassword)
+    return res.redirect("/admin?pwMsg=All+fields+are+required.");
+  if (newPassword.length < 6)
+    return res.redirect(
+      "/admin?pwMsg=New+password+must+be+at+least+6+characters.",
+    );
 
   const adminPassword = await getAdminPassword();
-  if (oldPassword !== adminPassword) return res.redirect('/admin?pwMsg=Current+password+is+incorrect.');
+  if (oldPassword !== adminPassword)
+    return res.redirect("/admin?pwMsg=Current+password+is+incorrect.");
 
-  await db.set('admin:password', newPassword);
-  res.redirect('/admin?pwMsg=ok');
-});
-
-// ADMIN – one-time: clear sriramsb open bets
-app.post('/admin/fix-sriramsb-open-bets', async (req, res) => {
-  const { password } = req.body || {};
-  const adminPassword = await getAdminPassword();
-  if (password !== adminPassword) return res.status(403).json({ error: 'Forbidden' });
-
-  const allBets = await getBets();
-  const now = new Date();
-  const cleaned = allBets.filter(b => {
-    if (b.user !== 'sriramsb' || b.status !== 'PENDING') return true;
-    const kickoff = new Date(b.commenceTime);
-    const tenMinsBefore = new Date(kickoff.getTime() - 10 * 60 * 1000);
-    return now >= tenMinsBefore;
-  });
-  const removed = allBets.length - cleaned.length;
-  await db.set('bets', cleaned);
-  res.json({ ok: true, removed });
-});
-
-// ADMIN – one-time: remove duplicate sriramsb tranche on Mexico vs South Korea
-app.post('/admin/fix-sriramsb-dupe', async (req, res) => {
-  const { password } = req.body || {};
-  const adminPassword = await getAdminPassword();
-  if (password !== adminPassword) return res.status(403).json({ error: 'Forbidden' });
-
-  const fixtureId = '0f2aeae6ac8e77223848d23a4ca86b0d';
-  const allBets = await getBets();
-  const dupes = allBets.filter(b => b.user === 'sriramsb' && b.fixtureId === fixtureId);
-  if (dupes.length < 2) return res.json({ ok: true, message: 'No duplicate found', count: dupes.length });
-
-  let kept = false;
-  const cleaned = allBets.filter(b => {
-    if (b.user === 'sriramsb' && b.fixtureId === fixtureId) {
-      if (!kept) { kept = true; return true; }
-      return false;
-    }
-    return true;
-  });
-  await db.set('bets', cleaned);
-  res.json({ ok: true, removed: allBets.length - cleaned.length, remaining: cleaned.filter(b => b.user === 'sriramsb' && b.fixtureId === fixtureId).length });
-});
-
-// ADMIN – one-time: fix Scotland vs Haiti PrakharThamke odds correction
-app.post('/admin/fix-prakhar-odds', async (req, res) => {
-  const { password } = req.body || {};
-  const adminPassword = await getAdminPassword();
-  if (password !== adminPassword) return res.status(403).json({ error: 'Forbidden' });
-
-  const fixtureId = '5ae41a06735c926eeb7f74006933adce';
-  const newOdds = 1.56;
-  const totalPool = 1200;
-
-  // Correct entries with new odds
-  const log = await db.get(`settlementLog:${fixtureId}`);
-  if (!log) return res.status(404).json({ error: 'Settlement log not found' });
-
-  const corrected = log.entries.map(e => {
-    const odds = e.user === 'PrakharThamke' ? newOdds : e.lockedOdds;
-    return { ...e, lockedOdds: odds, _cap: e.stake * odds };
-  });
-  const totalCaps = corrected.reduce((s, e) => s + e._cap, 0);
-  const newEntries = corrected.map(e => {
-    const rawPayout = Math.min(e._cap, (e._cap / totalCaps) * totalPool);
-    const finalPayout = Math.round(rawPayout * 10) / 10;
-    const netPoints  = Math.round((finalPayout - e.stake) * 10) / 10;
-    const { _cap, ...rest } = e;
-    return { ...rest, finalPayout, netPoints };
-  });
-
-  // Build delta map
-  const deltaMap = {};
-  for (const ne of newEntries) {
-    const old = log.entries.find(e => e.user === ne.user);
-    deltaMap[ne.user] = Math.round((ne.netPoints - old.netPoints) * 10) / 10;
-  }
-
-  // Update bets
-  const allBets = await getBets();
-  const updatedBets = allBets.map(b => {
-    if (b.fixtureId !== fixtureId) return b;
-    const ne = newEntries.find(e => e.user === b.user);
-    if (!ne) return b;
-    return { ...b, lockedOdds: ne.lockedOdds, netPoints: ne.netPoints };
-  });
-  await db.set('bets', updatedBets);
-
-  // Update settlement log
-  await db.set(`settlementLog:${fixtureId}`, { ...log, entries: newEntries });
-
-  // Update user totals
-  const results = [];
-  for (const [username, delta] of Object.entries(deltaMap)) {
-    const user = await getUserById(username);
-    if (!user) continue;
-    const newTotal = Math.round(((user.totalNetPoints ?? 0) + delta) * 10) / 10;
-    await saveUser({ ...user, totalNetPoints: newTotal });
-    results.push({ user: username, delta, newTotal });
-  }
-
-  res.json({ ok: true, results });
+  await db.set("admin:password", newPassword);
+  res.redirect("/admin?pwMsg=ok");
 });
 
 // ADMIN – manual settle a specific fixture
-app.post('/admin/manual-settle', async (req, res) => {
-  if (!req.session.isAdmin) return res.redirect('/admin');
+app.post("/admin/manual-settle", async (req, res) => {
+  if (!req.session.isAdmin) return res.redirect("/admin");
   const { fixtureId, result } = req.body || {};
-  if (!fixtureId || !['Home','Draw','Away'].includes(result)) {
-    return res.redirect('/admin?manualMsg=Invalid+fixture+or+result.');
+
+  const actualHomeGoals = Number(req.body.actualHomeGoals);
+  const actualAwayGoals = Number(req.body.actualAwayGoals);
+
+  if (!fixtureId || !["Home", "Draw", "Away"].includes(result)) {
+    return res.redirect("/admin?manualMsg=Invalid+fixture+or+result.");
   }
 
   const allBets = await getBets();
-  const bets = allBets.filter(b => b.fixtureId === fixtureId && b.status === 'PENDING');
-  if (!bets.length) return res.redirect('/admin?manualMsg=No+pending+bets+for+that+fixture.');
+
+  const bets = allBets.filter(
+    (b) => b.fixtureId === fixtureId && b.status === "PENDING",
+  );
+  if (!bets.length)
+    return res.redirect("/admin?manualMsg=No+pending+bets+for+that+fixture.");
 
   // Settlement — tranche-level pari-mutuel, each winning tranche capped at its own gross
   const totalStaked = bets.reduce((a, b) => a + b.stake, 0);
 
-  const sumGross = bets.reduce((s, b) =>
-    b.selection === result ? s + b.stake * parseFloat(b.lockedOdds) : s, 0);
+  const sumGross = bets.reduce((s, b) => {
+    if (b.selection !== result) return s;
+
+    const exactScoreHit =
+      b.predictedHomeGoals === actualHomeGoals &&
+      b.predictedAwayGoals === actualAwayGoals;
+
+    b.scoreBoostApplied = exactScoreHit;
+
+    b.effectiveOdds = exactScoreHit
+      ? Number(b.lockedOdds) + 1
+      : Number(b.lockedOdds);
+
+    const gross = b.stake * b.effectiveOdds;
+  }, 0);
+
+  if (result === "Home" && actualHomeGoals <= actualAwayGoals) {
+    return res.redirect(
+      `/admin?manualMsg=${encodeURIComponent(
+        "Home win selected but score does not match scoreline.",
+      )}`,
+    );
+  }
+
+  if (result === "Away" && actualAwayGoals <= actualHomeGoals) {
+    return res.redirect(
+      `/admin?manualMsg=${encodeURIComponent(
+        "Away win selected but score does not match scoreline.",
+      )}`,
+    );
+  }
+
+  if (result === "Draw" && actualHomeGoals !== actualAwayGoals) {
+    return res.redirect(
+      `/admin?manualMsg=${encodeURIComponent(
+        "Draw win selected but score does not match scoreline.",
+      )}`,
+    );
+  }
 
   let totalWinnerPayout = 0;
-  const tranchePayout = bets.map(b => {
+  const tranchePayout = bets.map((b) => {
     if (b.selection !== result) return 0;
-    const gross = b.stake * parseFloat(b.lockedOdds);
-    const payout = Math.round(Math.min(sumGross > 0 ? (gross / sumGross) * totalStaked : 0, gross) * 10) / 10;
+    const exactScoreHit =
+      b.predictedHomeGoals === actualHomeGoals &&
+      b.predictedAwayGoals === actualAwayGoals;
+
+    const effectiveOdds = exactScoreHit
+      ? Number(b.lockedOdds) + 1
+      : Number(b.lockedOdds);
+
+    const gross = b.stake * effectiveOdds;
+    const payout =
+      Math.round(
+        Math.min(sumGross > 0 ? (gross / sumGross) * totalStaked : 0, gross) *
+          10,
+      ) / 10;
     totalWinnerPayout += payout;
     return payout;
   });
 
   const undistributed = Math.round((totalStaked - totalWinnerPayout) * 10) / 10;
-  const totalLoserStake = bets.reduce((s, b) => b.selection !== result ? s + b.stake : s, 0);
+  const totalLoserStake = bets.reduce(
+    (s, b) => (b.selection !== result ? s + b.stake : s),
+    0,
+  );
   for (let i = 0; i < bets.length; i++) {
     if (bets[i].selection !== result) {
-      tranchePayout[i] = totalLoserStake > 0
-        ? Math.round(undistributed * (bets[i].stake / totalLoserStake) * 10) / 10 : 0;
+      tranchePayout[i] =
+        totalLoserStake > 0
+          ? Math.round(undistributed * (bets[i].stake / totalLoserStake) * 10) /
+            10
+          : 0;
     }
   }
 
   for (let i = 0; i < bets.length; i++) {
-    bets[i].status = bets[i].selection === result ? 'WON' : 'LOST';
+    bets[i].status = bets[i].selection === result ? "WON" : "LOST";
     bets[i].result = result;
-    bets[i].netPoints = Math.round((tranchePayout[i] - bets[i].stake) * 10) / 10;
+    bets[i].netPoints =
+      Math.round((tranchePayout[i] - bets[i].stake) * 10) / 10;
   }
 
   const userNetMap = {};
   for (const bet of bets) {
-    userNetMap[bet.user] = Math.round(((userNetMap[bet.user] || 0) + bet.netPoints) * 10) / 10;
+    userNetMap[bet.user] =
+      Math.round(((userNetMap[bet.user] || 0) + bet.netPoints) * 10) / 10;
   }
   for (const [uid, netPts] of Object.entries(userNetMap)) {
     try {
       const user = await getUserById(uid.toLowerCase());
       if (user) {
-        user.totalNetPoints = Math.round((user.totalNetPoints + netPts) * 10) / 10;
+        user.totalNetPoints =
+          Math.round((user.totalNetPoints + netPts) * 10) / 10;
         await saveUser(user);
       }
-    } catch (e) { /* ignore per-user errors */ }
+    } catch (e) {
+      /* ignore per-user errors */
+    }
   }
 
   const logEntries = [];
   for (let i = 0; i < bets.length; i++) {
-    logEntries.push({ user: bets[i].user, selection: bets[i].selection, stake: bets[i].stake,
-      lockedOdds: bets[i].lockedOdds, status: bets[i].status,
-      finalPayout: tranchePayout[i], netPoints: bets[i].netPoints });
+    logEntries.push({
+      user: bets[i].user,
+      selection: bets[i].selection,
+      stake: bets[i].stake,
+      lockedOdds: bets[i].lockedOdds,
+      effectiveOdds: bets[i].effectiveOdds || bets[i].lockedOdds,
+
+      predictedHomeGoals: bets[i].predictedHomeGoals,
+      predictedAwayGoals: bets[i].predictedAwayGoals,
+
+      actualHomeGoals,
+      actualAwayGoals,
+
+      scoreBoostApplied: bets[i].scoreBoostApplied || false,
+
+      status: bets[i].status,
+      finalPayout: tranchePayout[i],
+      netPoints: bets[i].netPoints,
+    });
   }
 
   // Write updated bets back to DB (allBets mutated in-place above)
@@ -3630,56 +4105,92 @@ app.post('/admin/manual-settle', async (req, res) => {
   // Persist settlement log
   const fb = bets[0];
   await db.set(`settlementLog:${fixtureId}`, {
-    fixtureId, homeTeam: fb.homeTeam || '?', awayTeam: fb.awayTeam || '?',
-    leagueName: fb.leagueName || 'Unknown', result, totalStaked,
-    settledAt: moment().tz(TIMEZONE).format('DD MMM YYYY, HH:mm z'),
+    fixtureId,
+    homeTeam: fb.homeTeam || "?",
+    awayTeam: fb.awayTeam || "?",
+
+    actualHomeGoals,
+    actualAwayGoals,
+
+    leagueName: fb.leagueName || "Unknown",
+    result,
+    totalStaked,
+
+    settledAt: moment().tz(TIMEZONE).format("DD MMM YYYY, HH:mm z"),
+
     entries: logEntries,
   });
 
-  console.log(`[ManualSettle] ${fb.homeTeam} vs ${fb.awayTeam} → ${result} | ${bets.length} bets settled`);
-  res.redirect('/admin?manualMsg=ok');
+  console.log(
+    `[ManualSettle] ${fb.homeTeam} vs ${fb.awayTeam} → ${result} | ${bets.length} bets settled`,
+  );
+  res.redirect("/admin?manualMsg=ok");
 });
 
 // ADMIN – re-settle an already-settled fixture with a corrected result
-app.post('/admin/re-settle', async (req, res) => {
-  if (!req.session.isAdmin) return res.redirect('/admin');
+app.post("/admin/re-settle", async (req, res) => {
+  if (!req.session.isAdmin) return res.redirect("/admin");
   const { fixtureId, result: NEW_RESULT } = req.body || {};
-  if (!fixtureId || !['Home', 'Draw', 'Away'].includes(NEW_RESULT)) {
-    return res.redirect('/admin?resettleMsg=Invalid+fixture+or+result.');
+  if (!fixtureId || !["Home", "Draw", "Away"].includes(NEW_RESULT)) {
+    return res.redirect("/admin?resettleMsg=Invalid+fixture+or+result.");
   }
 
   const log = await db.get(`settlementLog:${fixtureId}`);
-  if (!log) return res.redirect('/admin?resettleMsg=No+settlement+log+found+for+that+fixture.');
-  if (log.result === NEW_RESULT) return res.redirect('/admin?resettleMsg=Fixture+is+already+settled+with+that+result.');
+  if (!log)
+    return res.redirect(
+      "/admin?resettleMsg=No+settlement+log+found+for+that+fixture.",
+    );
+  if (log.result === NEW_RESULT)
+    return res.redirect(
+      "/admin?resettleMsg=Fixture+is+already+settled+with+that+result.",
+    );
 
   // Step 1 – reverse old netPoints from each user
   const userReverseMap = {};
   for (const e of log.entries) {
-    userReverseMap[e.user] = Math.round(((userReverseMap[e.user] || 0) - e.netPoints) * 10) / 10;
+    userReverseMap[e.user] =
+      Math.round(((userReverseMap[e.user] || 0) - e.netPoints) * 10) / 10;
   }
   for (const [uid, delta] of Object.entries(userReverseMap)) {
     const u = await getUserById(uid.toLowerCase());
-    if (u) { u.totalNetPoints = Math.round((u.totalNetPoints + delta) * 10) / 10; await saveUser(u); }
+    if (u) {
+      u.totalNetPoints = Math.round((u.totalNetPoints + delta) * 10) / 10;
+      await saveUser(u);
+    }
   }
 
   // Step 2 – recalculate pari-mutuel with new result
   const totalStaked = log.totalStaked;
-  const sumGross = log.entries.reduce((s, e) =>
-    e.selection === NEW_RESULT ? s + e.stake * parseFloat(e.lockedOdds) : s, 0);
+  const sumGross = log.entries.reduce(
+    (s, e) =>
+      e.selection === NEW_RESULT ? s + e.stake * parseFloat(e.lockedOdds) : s,
+    0,
+  );
   let totalWinnerPayout = 0;
-  const tranchePayout = log.entries.map(e => {
+  const tranchePayout = log.entries.map((e) => {
     if (e.selection !== NEW_RESULT) return 0;
     const gross = e.stake * parseFloat(e.lockedOdds);
-    const payout = Math.round(Math.min(sumGross > 0 ? (gross / sumGross) * totalStaked : 0, gross) * 10) / 10;
+    const payout =
+      Math.round(
+        Math.min(sumGross > 0 ? (gross / sumGross) * totalStaked : 0, gross) *
+          10,
+      ) / 10;
     totalWinnerPayout += payout;
     return payout;
   });
   const undistributed = Math.round((totalStaked - totalWinnerPayout) * 10) / 10;
-  const totalLoserStake = log.entries.reduce((s, e) => e.selection !== NEW_RESULT ? s + e.stake : s, 0);
+  const totalLoserStake = log.entries.reduce(
+    (s, e) => (e.selection !== NEW_RESULT ? s + e.stake : s),
+    0,
+  );
   for (let i = 0; i < log.entries.length; i++) {
     if (log.entries[i].selection !== NEW_RESULT) {
-      tranchePayout[i] = totalLoserStake > 0
-        ? Math.round(undistributed * (log.entries[i].stake / totalLoserStake) * 10) / 10 : 0;
+      tranchePayout[i] =
+        totalLoserStake > 0
+          ? Math.round(
+              undistributed * (log.entries[i].stake / totalLoserStake) * 10,
+            ) / 10
+          : 0;
     }
   }
 
@@ -3688,64 +4199,101 @@ app.post('/admin/re-settle', async (req, res) => {
   const userNewMap = {};
   for (let i = 0; i < log.entries.length; i++) {
     const e = log.entries[i];
-    const status = e.selection === NEW_RESULT ? 'WON' : 'LOST';
+    const status = e.selection === NEW_RESULT ? "WON" : "LOST";
     const netPoints = Math.round((tranchePayout[i] - e.stake) * 10) / 10;
-    userNewMap[e.user] = Math.round(((userNewMap[e.user] || 0) + netPoints) * 10) / 10;
-    newEntries.push({ user: e.user, selection: e.selection, stake: e.stake,
-      lockedOdds: e.lockedOdds, status, finalPayout: tranchePayout[i], netPoints });
+    userNewMap[e.user] =
+      Math.round(((userNewMap[e.user] || 0) + netPoints) * 10) / 10;
+    newEntries.push({
+      user: e.user,
+      selection: e.selection,
+      stake: e.stake,
+      lockedOdds: e.lockedOdds,
+      status,
+      finalPayout: tranchePayout[i],
+      netPoints,
+    });
   }
   for (const [uid, delta] of Object.entries(userNewMap)) {
     const u = await getUserById(uid.toLowerCase());
-    if (u) { u.totalNetPoints = Math.round((u.totalNetPoints + delta) * 10) / 10; await saveUser(u); }
+    if (u) {
+      u.totalNetPoints = Math.round((u.totalNetPoints + delta) * 10) / 10;
+      await saveUser(u);
+    }
   }
 
   // Step 4 – update bets array
   const allBets = await getBets();
   for (const bet of allBets) {
     if (bet.fixtureId !== fixtureId) continue;
-    const entry = newEntries.find(e => e.user === bet.user && e.selection === bet.selection && e.stake === bet.stake);
-    if (entry) { bet.status = entry.status; bet.netPoints = entry.netPoints; bet.result = NEW_RESULT; }
+    const entry = newEntries.find(
+      (e) =>
+        e.user === bet.user &&
+        e.selection === bet.selection &&
+        e.stake === bet.stake,
+    );
+    if (entry) {
+      bet.status = entry.status;
+      bet.netPoints = entry.netPoints;
+      bet.result = NEW_RESULT;
+    }
   }
   await updateBets(allBets);
 
   // Step 5 – overwrite settlement log
-  await db.set(`settlementLog:${fixtureId}`, { ...log, result: NEW_RESULT, entries: newEntries,
-    settledAt: moment().tz(TIMEZONE).format('DD MMM YYYY, HH:mm z') });
+  await db.set(`settlementLog:${fixtureId}`, {
+    ...log,
+    result: NEW_RESULT,
+    entries: newEntries,
+    settledAt: moment().tz(TIMEZONE).format("DD MMM YYYY, HH:mm z"),
+  });
 
-  console.log(`[ReSettle] ${log.homeTeam} vs ${log.awayTeam} ${log.result} → ${NEW_RESULT}`);
-  res.redirect('/admin?resettleMsg=ok');
+  console.log(
+    `[ReSettle] ${log.homeTeam} vs ${log.awayTeam} ${log.result} → ${NEW_RESULT}`,
+  );
+  res.redirect("/admin?resettleMsg=ok");
 });
 
 // ADMIN – email all settlement logs
-app.post('/admin/send-settlement-logs', async (req, res) => {
-  if (!req.session.isAdmin) return res.redirect('/admin');
+app.post("/admin/send-settlement-logs", async (req, res) => {
+  if (!req.session.isAdmin) return res.redirect("/admin");
 
-  const keys = await db.list('settlementLog:');
-  if (!keys.length) return res.redirect('/admin?logMsg=No+settlement+logs+to+send.');
+  const keys = await db.list("settlementLog:");
+  if (!keys.length)
+    return res.redirect("/admin?logMsg=No+settlement+logs+to+send.");
 
   const logs = [];
   for (const key of keys) {
     const log = await db.get(key);
     if (log) logs.push(log);
   }
-  logs.sort((a, b) => a.settledAt < b.settledAt ? 1 : -1); // newest first
+  logs.sort((a, b) => (a.settledAt < b.settledAt ? 1 : -1)); // newest first
 
-  const matchSections = logs.map(log => {
-    const resultLabel = log.result === 'Home' ? `${log.homeTeam} wins`
-      : log.result === 'Away' ? `${log.awayTeam} wins` : 'Draw';
+  const matchSections = logs
+    .map((log) => {
+      const resultLabel =
+        log.result === "Home"
+          ? `${log.homeTeam} wins`
+          : log.result === "Away"
+            ? `${log.awayTeam} wins`
+            : "Draw";
 
-    const totalGross = log.entries.filter(e => e.status === 'WON')
-      .reduce((sum, e) => sum + e.stake * parseFloat(e.lockedOdds), 0);
-    const formula = totalGross > 0
-      ? `Payout = (stake × odds ÷ ${totalGross.toFixed(1)}) × ${log.totalStaked} pts pool`
-      : `No correct picks — all stakes forfeited`;
+      const totalGross = log.entries
+        .filter((e) => e.status === "WON")
+        .reduce((sum, e) => sum + e.stake * parseFloat(e.lockedOdds), 0);
+      const formula =
+        totalGross > 0
+          ? `Payout = (stake × odds ÷ ${totalGross.toFixed(1)}) × ${log.totalStaked} pts pool`
+          : `No correct picks — all stakes forfeited`;
 
-    const entryRows = log.entries.map(e => {
-      const won = e.status === 'WON';
-      const color = won ? '#16a34a' : '#dc2626';
-      const sign = e.netPoints >= 0 ? '+' : '';
-      const grossPts = won ? (e.stake * parseFloat(e.lockedOdds)).toFixed(1) : '0.0';
-      return `<tr style="border-bottom:1px solid #e5e7eb;">
+      const entryRows = log.entries
+        .map((e) => {
+          const won = e.status === "WON";
+          const color = won ? "#16a34a" : "#dc2626";
+          const sign = e.netPoints >= 0 ? "+" : "";
+          const grossPts = won
+            ? (e.stake * parseFloat(e.lockedOdds)).toFixed(1)
+            : "0.0";
+          return `<tr style="border-bottom:1px solid #e5e7eb;">
         <td style="padding:6px 10px;">${e.user}</td>
         <td style="padding:6px 10px;">${e.selection} @ ${e.lockedOdds}</td>
         <td style="padding:6px 10px;text-align:center;">${e.stake}</td>
@@ -3754,9 +4302,10 @@ app.post('/admin/send-settlement-logs', async (req, res) => {
         <td style="padding:6px 10px;text-align:center;font-weight:bold;color:${color};">${sign}${e.netPoints.toFixed(1)}</td>
         <td style="padding:6px 10px;text-align:center;color:${color};">${e.status}</td>
       </tr>`;
-    }).join('');
+        })
+        .join("");
 
-    return `
+      return `
       <h3 style="font-family:sans-serif;margin:24px 0 2px;">${log.homeTeam} vs ${log.awayTeam}</h3>
       <p style="font-family:sans-serif;color:#6b7280;margin:0 0 3px;font-size:13px;">
         ${log.leagueName} &nbsp;·&nbsp; Result: <strong style="color:#111;">${resultLabel}</strong>
@@ -3778,33 +4327,40 @@ app.post('/admin/send-settlement-logs', async (req, res) => {
         </thead>
         <tbody>${entryRows}</tbody>
       </table>`;
-  }).join('<hr style="margin:20px 0;border-color:#e5e7eb;">');
+    })
+    .join('<hr style="margin:20px 0;border-color:#e5e7eb;">');
 
   // Current leaderboard
-  const userKeys = await db.list('user:');
+  const userKeys = await db.list("user:");
   const users = [];
-  for (const key of userKeys) { const u = await db.get(key); if (u) users.push(u); }
+  for (const key of userKeys) {
+    const u = await db.get(key);
+    if (u) users.push(u);
+  }
   users.sort((a, b) => b.totalNetPoints - a.totalNetPoints);
-  const leaderRows = users.map((u, i) => {
-    const name = u.displayName || u.userId || 'Unknown';
-    const pts = (u.totalNetPoints || 0).toFixed(1);
-    const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`;
-    return `<tr style="border-bottom:1px solid #e5e7eb;">
+  const leaderRows = users
+    .map((u, i) => {
+      const name = u.displayName || u.userId || "Unknown";
+      const pts = (u.totalNetPoints || 0).toFixed(1);
+      const medal =
+        i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `#${i + 1}`;
+      return `<tr style="border-bottom:1px solid #e5e7eb;">
       <td style="padding:6px 10px;">${medal}</td>
       <td style="padding:6px 10px;">${name}</td>
       <td style="padding:6px 10px;text-align:right;font-weight:bold;">${pts}</td>
     </tr>`;
-  }).join('');
+    })
+    .join("");
 
-  const sentAt = moment().tz(TIMEZONE).format('DD MMM YYYY, HH:mm z');
+  const sentAt = moment().tz(TIMEZONE).format("DD MMM YYYY, HH:mm z");
   try {
     await resend.emails.send({
-      from: 'No Betting Zone <onboarding@resend.dev>',
-      to: 'gletterdash@gmail.com',
-      subject: `Compiled Report — ${logs.length} match${logs.length !== 1 ? 'es' : ''} settled`,
+      from: "No Betting Zone <onboarding@resend.dev>",
+      to: "gletterdash@gmail.com",
+      subject: `Compiled Report — ${logs.length} match${logs.length !== 1 ? "es" : ""} settled`,
       html: `
         <h2 style="font-family:sans-serif;">⚽ No Betting Zone — Compiled Settlement Report</h2>
-        <p style="font-family:sans-serif;color:#6b7280;">Generated: ${sentAt} &nbsp;·&nbsp; ${logs.length} match${logs.length !== 1 ? 'es' : ''} total</p>
+        <p style="font-family:sans-serif;color:#6b7280;">Generated: ${sentAt} &nbsp;·&nbsp; ${logs.length} match${logs.length !== 1 ? "es" : ""} total</p>
 
         <hr style="border-color:#e5e7eb;">
         <h2 style="font-family:sans-serif;font-size:15px;margin-bottom:0;">Match Breakdowns</h2>
@@ -3822,81 +4378,72 @@ app.post('/admin/send-settlement-logs', async (req, res) => {
           </thead>
           <tbody>${leaderRows}</tbody>
         </table>
-      `
+      `,
     });
-    res.redirect('/admin?logMsg=ok');
+    res.redirect("/admin?logMsg=ok");
   } catch (e) {
-    console.error('[SettlementEmail]', e.message);
-    res.redirect('/admin?logMsg=Email+failed:+' + encodeURIComponent(e.message));
+    console.error("[SettlementEmail]", e.message);
+    res.redirect(
+      "/admin?logMsg=Email+failed:+" + encodeURIComponent(e.message),
+    );
   }
 });
 
 // LEADERBOARD
-app.get('/leaderboard', (req, res) => res.redirect('/results'));
+app.get("/leaderboard", (req, res) => res.redirect("/results"));
 
 async function repairBetStatuses() {
+  const bets = await getBets();
+  const logKeys = await db.list("settlementLog:");
 
-    const bets = await getBets();
-    const logKeys = await db.list("settlementLog:");
+  let repaired = 0;
 
+  for (const key of logKeys) {
+    const log = await db.get(key);
 
-    
-    let repaired = 0;
+    if (!log || !log.entries) continue;
 
-    for (const key of logKeys) {
+    for (const entry of log.entries) {
+      const bet = bets.find(
+        (b) =>
+          b.fixtureId === log.fixtureId &&
+          b.user === entry.user &&
+          b.selection === entry.selection &&
+          b.stake === entry.stake &&
+          b.status === "PENDING",
+      );
 
-        const log = await db.get(key);
+      if (!bet) continue;
 
-        if (!log || !log.entries) continue;
+      bet.status = entry.status;
+      bet.result = log.result;
+      bet.netPoints = entry.netPoints;
 
-        for (const entry of log.entries) {
-
-            const bet = bets.find(b =>
-                b.fixtureId === log.fixtureId &&
-                b.user === entry.user &&
-                b.selection === entry.selection &&
-                b.stake === entry.stake &&
-                b.status === "PENDING"
-            );
-
-            if (!bet) continue;
-
-            bet.status = entry.status;
-            bet.result = log.result;
-            bet.netPoints = entry.netPoints;
-
-            repaired++;
-
-        }
-
+      repaired++;
     }
+  }
 
-    await updateBets(bets);
+  await updateBets(bets);
 
-    console.log(`Repaired ${repaired} bets.`);
+  console.log(`Repaired ${repaired} bets.`);
 
-    return repaired;
-
+  return repaired;
 }
 
 app.post("/admin/repair-bet-statuses", async (req, res) => {
+  if (!req.session.isAdmin) return res.redirect("/admin");
 
-    if (!req.session.isAdmin)
-        return res.redirect("/admin");
+  const repaired = await repairBetStatuses();
 
-    const repaired = await repairBetStatuses();
-
-    res.redirect(`/admin?msg=Repaired+${repaired}+bets`);
-
+  res.redirect(`/admin?msg=Repaired+${repaired}+bets`);
 });
 
-
 // FORUM – chat with emojis (from keyboard) and @Name in text
-app.get('/forum', requireAuth, async (req, res) => {
+app.get("/forum", requireAuth, async (req, res) => {
   const messages = await getMessages();
   const sessionUserId = req.session.userId;
 
-  let html = htmlHeader('Forum - No Betting Zone');
+  let html = htmlHeader("Forum - No Betting Zone");
   html += `<h2>Forum</h2>`;
 
   if (sessionUserId) {
@@ -3915,8 +4462,8 @@ app.get('/forum', requireAuth, async (req, res) => {
 
   for (const m of messages.slice().reverse()) {
     const ts = m.createdAt
-      ? moment(m.createdAt).tz(TIMEZONE).format('DD MMM, HH:mm')
-      : '';
+      ? moment(m.createdAt).tz(TIMEZONE).format("DD MMM, HH:mm")
+      : "";
     html += `
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
@@ -3928,39 +4475,37 @@ app.get('/forum', requireAuth, async (req, res) => {
     `;
   }
 
-  html += htmlFooter('forum');
+  html += htmlFooter("forum");
   res.send(html);
 });
 
-app.post('/forum', requireAuth, async (req, res) => {
+app.post("/forum", requireAuth, async (req, res) => {
   const { text } = req.body || {};
-  if (!text) return res.redirect('/forum');
+  if (!text) return res.redirect("/forum");
 
   await addMessage({
     id: Date.now().toString(),
     name: req.session.userId,
     text: text.trim(),
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
   });
 
-  res.redirect('/forum');
+  res.redirect("/forum");
 });
 
 // START SERVER — load persisted snapshot into memory before accepting requests
 // START SERVER — load persisted snapshot into memory before accepting requests
 loadFixturesFromDB().then(async () => {
+  console.log("[Startup] Running settlement...");
 
-    console.log("[Startup] Running settlement...");
+  await settlePendingBets();
 
-    await settlePendingBets();
+  if (!resultsCache) {
+    console.log("[Startup] Building results cache...");
+    await rebuildResultsCache();
+  }
 
-    if (!resultsCache) {
-        console.log("[Startup] Building results cache...");
-        await rebuildResultsCache();
-    }
-
-    app.listen(PORT, () => {
-        console.log(`Server running on port ${PORT}`);
-    });
-
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
 });
