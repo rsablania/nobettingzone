@@ -776,6 +776,9 @@ async function settlePendingBets() {
         if (b.selection !== result) return sum;
 
         const boosted =
+          b.selection === result &&
+          b.predictedHomeGoals != null &&
+          b.predictedAwayGoals != null &&
           Number(b.predictedHomeGoals) === fixtureData.homeGoals &&
           Number(b.predictedAwayGoals) === fixtureData.awayGoals;
 
@@ -790,12 +793,14 @@ async function settlePendingBets() {
         if (b.selection !== result) return 0;
 
         const exactScoreHit =
+          b.predictedHomeGoals != null &&
+          b.predictedAwayGoals != null &&
           Number(b.predictedHomeGoals) === fixtureData.homeGoals &&
           Number(b.predictedAwayGoals) === fixtureData.awayGoals;
 
-        b.scoreBoostApplied = exactScoreHit;
+        b.scoreBoostApplied = b.selection === result && exactScoreHit;
 
-        const effectiveOdds = exactScoreHit
+        const effectiveOdds = b.scoreBoostApplied
           ? Number(b.lockedOdds) + 1
           : Number(b.lockedOdds);
 
@@ -853,7 +858,7 @@ async function settlePendingBets() {
 
       // Update users
       for (const [userId, netPoints] of Object.entries(userNetMap)) {
-        const user = await getUserById(userId);
+        const user = await getUserById(userId.toLowerCase());
 
         if (!user) continue;
 
@@ -871,34 +876,49 @@ async function settlePendingBets() {
         homeTeam: firstBet.homeTeam,
         awayTeam: firstBet.awayTeam,
         leagueName: firstBet.leagueName,
+
         result,
+
+        // actual final score
+        actualHomeGoals: fixtureData.homeGoals,
+        actualAwayGoals: fixtureData.awayGoals,
+
         totalStaked,
 
         settledAt: moment().tz(TIMEZONE).format("DD MMM YYYY, HH:mm z"),
 
         entries: bets.map((bet, i) => ({
           user: bet.user,
+
           selection: bet.selection,
           stake: bet.stake,
 
-          // Original odds at bet placement
+          // original odds at placement time
           lockedOdds: bet.lockedOdds,
 
-          // Odds actually used during settlement
+          // odds used for settlement
           finalOdds: bet.finalOdds ?? bet.lockedOdds,
 
-          // Score prediction
+          // prediction
           predictedHomeGoals: bet.predictedHomeGoals ?? null,
+
           predictedAwayGoals: bet.predictedAwayGoals ?? null,
 
-          // Exact score bonus
+          // actual score
+          actualHomeGoals: fixtureData.homeGoals,
+
+          actualAwayGoals: fixtureData.awayGoals,
+
+          // exact score bonus
           scoreBoostApplied: bet.scoreBoostApplied ?? false,
 
           status: bet.status,
-          finalPayout: tranchePayout[i],
-          netPoints: bet.netPoints,
 
-          // Useful for future analytics
+          finalPayout: tranchePayout[i],
+
+          netPoints: bet.netPoints,
+          effectiveGross: bet.stake * (bet.finalOdds ?? bet.lockedOdds),
+
           settledResult: result,
         })),
       });
@@ -2843,6 +2863,113 @@ app.get("/summary", requireAuth, async (req, res) => {
   res.send(html);
 });
 
+// ADMIN - Undo settlement for a fixture
+// app.get("/admin/undo-settlement", async (req, res) => {
+//   // const adjustments = {
+//   //   ankitmodi: -160.4,
+//   //   Kaustav: 39.6,
+//   //   TathagataG: -200,
+//   //   dhara_sayan: -151,
+//   //   Nihit: -100,
+//   //   Rishabh: 198,
+//   //   Govinda: -110.4,
+//   //   gangsta: 79.2,
+//   //   Asli_BT_Sdg: 198,
+//   //   NoGambleNoFuture: 198,
+//   //   RushFTW: -101,
+//   //   "Que sera sera": 118.8,
+//   //   LM10: 128.2,
+//   //   "Fish <^>": 128.2,
+//   //   SSB: -11.4,
+//   //   Inso: 138.6,
+//   //   Vipin: 198,
+//   //   Bengal_Tiger01: -290.6,
+//   //   "1was3im": -300,
+//   // };
+//   // for (const [userId, adjustment] of Object.entries(adjustments)) {
+//   //   const user = await getUserById(userId);
+//   //   if (!user) {
+//   //     console.log("User not found:", userId);
+//   //     continue;
+//   //   }
+//   //   user.totalNetPoints =
+//   //     Math.round((user.totalNetPoints - adjustment) * 10) / 10;
+//   //   await saveUser(user);
+//   //   console.log(`${userId}: reversed ${adjustment}`);
+//   // }
+//   // const bets = await getBets();
+//   // for (const bet of bets) {
+//   //   if (bet.fixtureId === "e66e4478b739fa0657a7a11235e1fcee") {
+//   //     bet.status = "PENDING";
+//   //     bet.result = null;
+//   //     bet.netPoints = null;
+//   //   }
+//   // }
+//   // await updateBets(bets);
+//   // console.log("Norway vs England reset complete");
+
+//   const fixtureId = "e66e4478b739fa0657a7a11235e1fcee";
+
+//   const log = await db.get(`settlementLog:${fixtureId}`);
+
+//   if (!log) {
+//     console.log("Settlement log not found");
+//     return;
+//   }
+
+//   // Reverse user points
+//   const adjustments = {};
+
+//   for (const entry of log.entries) {
+//     adjustments[entry.user] =
+//       (adjustments[entry.user] || 0) + Number(entry.netPoints || 0);
+//   }
+
+//   for (const [userId, adjustment] of Object.entries(adjustments)) {
+//     const user = await getUserById(userId.toLowerCase());
+
+//     if (!user) {
+//       console.log(`User not found: ${userId}`);
+//       continue;
+//     }
+
+//     user.totalNetPoints =
+//       Math.round((user.totalNetPoints - adjustment) * 10) / 10;
+
+//     await saveUser(user);
+
+//     console.log(`Reversed ${adjustment} points for ${userId}`);
+//   }
+
+//   // Reset bets
+//   const allBets = await getBets();
+
+//   let resetCount = 0;
+
+//   for (const bet of allBets) {
+//     if (bet.fixtureId !== fixtureId) continue;
+
+//     bet.status = "PENDING";
+//     bet.result = null;
+//     bet.netPoints = null;
+
+//     delete bet.effectiveOdds;
+//     delete bet.scoreBoostApplied;
+//     delete bet.finalPayout;
+//     delete bet.actualHomeGoals;
+//     delete bet.actualAwayGoals;
+
+//     resetCount++;
+//   }
+
+//   await updateBets(allBets);
+
+//   // Delete settlement log
+//   await db.delete(`settlementLog:${fixtureId}`);
+
+//   console.log(`Rollback complete. ${resetCount} bets reset to PENDING.`);
+// });
+
 // RULES – read-only explanation of results & settlement logic
 app.get("/rules", requireAuth, (req, res) => {
   let html = htmlHeader("Rules - No Betting Zone");
@@ -3540,14 +3667,6 @@ app.get("/admin", async (req, res) => {
 `;
 
     html += `
-    <h3 style="font-size:14px;color:#9ca3af;">Repair all pending settled bets</h3>  
-    <form method="POST" action="/admin/repair-bet-statuses"
-      onsubmit="return confirm('Repair all pending settled bets?');">
-    <button type="submit"
-            style="background:#2563eb;border-color:#2563eb;">
-        Repair Bet Statuses
-    </button>
-</form>
 <hr style="border-color:#1f2937;margin:16px 0;">
 <h3 style="font-size:14px;color:#9ca3af;margin-top:0;">Run daily job</h3>
       <form method="POST" action="/admin/run-job">
@@ -3945,6 +4064,7 @@ app.post("/admin/change-password", async (req, res) => {
 // ADMIN – manual settle a specific fixture
 app.post("/admin/manual-settle", async (req, res) => {
   if (!req.session.isAdmin) return res.redirect("/admin");
+
   const { fixtureId, result } = req.body || {};
 
   const actualHomeGoals = Number(req.body.actualHomeGoals);
@@ -3954,166 +4074,168 @@ app.post("/admin/manual-settle", async (req, res) => {
     return res.redirect("/admin?manualMsg=Invalid+fixture+or+result.");
   }
 
-  const allBets = await getBets();
-
-  const bets = allBets.filter(
-    (b) => b.fixtureId === fixtureId && b.status === "PENDING",
-  );
-  if (!bets.length)
-    return res.redirect("/admin?manualMsg=No+pending+bets+for+that+fixture.");
-
-  // Settlement — tranche-level pari-mutuel, each winning tranche capped at its own gross
-  const totalStaked = bets.reduce((a, b) => a + b.stake, 0);
-
-  const sumGross = bets.reduce((s, b) => {
-    if (b.selection !== result) return s;
-
-    const exactScoreHit =
-      b.predictedHomeGoals === actualHomeGoals &&
-      b.predictedAwayGoals === actualAwayGoals;
-
-    b.scoreBoostApplied = exactScoreHit;
-
-    b.effectiveOdds = exactScoreHit
-      ? Number(b.lockedOdds) + 1
-      : Number(b.lockedOdds);
-
-    const gross = b.stake * b.effectiveOdds;
-  }, 0);
-
+  // Validate score vs selected result
   if (result === "Home" && actualHomeGoals <= actualAwayGoals) {
     return res.redirect(
-      `/admin?manualMsg=${encodeURIComponent(
-        "Home win selected but score does not match scoreline.",
-      )}`,
+      "/admin?manualMsg=Home+win+selected+but+score+does+not+match.",
     );
   }
 
   if (result === "Away" && actualAwayGoals <= actualHomeGoals) {
     return res.redirect(
-      `/admin?manualMsg=${encodeURIComponent(
-        "Away win selected but score does not match scoreline.",
-      )}`,
+      "/admin?manualMsg=Away+win+selected+but+score+does+not+match.",
     );
   }
 
   if (result === "Draw" && actualHomeGoals !== actualAwayGoals) {
     return res.redirect(
-      `/admin?manualMsg=${encodeURIComponent(
-        "Draw win selected but score does not match scoreline.",
-      )}`,
+      "/admin?manualMsg=Draw+selected+but+score+does+not+match.",
     );
   }
 
-  let totalWinnerPayout = 0;
-  const tranchePayout = bets.map((b) => {
-    if (b.selection !== result) return 0;
+  const allBets = await getBets();
+
+  const bets = allBets.filter(
+    (b) => b.fixtureId === fixtureId && b.status === "PENDING",
+  );
+
+  if (!bets.length) {
+    return res.redirect("/admin?manualMsg=No+pending+bets+for+that+fixture.");
+  }
+
+  const totalStaked = bets.reduce((sum, bet) => sum + bet.stake, 0);
+
+  const isWinner = (bet) => bet.selection === result;
+
+  // Calculate effective odds
+  for (const bet of bets) {
     const exactScoreHit =
-      b.predictedHomeGoals === actualHomeGoals &&
-      b.predictedAwayGoals === actualAwayGoals;
+      bet.predictedHomeGoals != null &&
+      bet.predictedAwayGoals != null &&
+      bet.predictedHomeGoals === actualHomeGoals &&
+      bet.predictedAwayGoals === actualAwayGoals;
 
-    const effectiveOdds = exactScoreHit
-      ? Number(b.lockedOdds) + 1
-      : Number(b.lockedOdds);
+    bet.scoreBoostApplied = isWinner(bet) && exactScoreHit;
 
-    const gross = b.stake * effectiveOdds;
+    bet.effectiveOdds = bet.scoreBoostApplied
+      ? Number(bet.lockedOdds) + 1
+      : Number(bet.lockedOdds);
+  }
+
+  // Total gross winning exposure
+  const sumGross = bets.reduce((sum, bet) => {
+    if (!isWinner(bet)) return sum;
+
+    return sum + bet.stake * bet.effectiveOdds;
+  }, 0);
+
+  let totalWinnerPayout = 0;
+
+  const tranchePayout = bets.map((bet) => {
+    if (!isWinner(bet)) return 0;
+
+    const gross = bet.stake * bet.effectiveOdds;
+
     const payout =
       Math.round(
         Math.min(sumGross > 0 ? (gross / sumGross) * totalStaked : 0, gross) *
           10,
       ) / 10;
+
     totalWinnerPayout += payout;
+
     return payout;
   });
 
   const undistributed = Math.round((totalStaked - totalWinnerPayout) * 10) / 10;
+
   const totalLoserStake = bets.reduce(
-    (s, b) => (b.selection !== result ? s + b.stake : s),
+    (sum, bet) => (!isWinner(bet) ? sum + bet.stake : sum),
     0,
   );
+
+  // Return unused pool to losers
   for (let i = 0; i < bets.length; i++) {
-    if (bets[i].selection !== result) {
-      tranchePayout[i] =
-        totalLoserStake > 0
-          ? Math.round(undistributed * (bets[i].stake / totalLoserStake) * 10) /
-            10
-          : 0;
-    }
+    if (isWinner(bets[i])) continue;
+
+    tranchePayout[i] =
+      totalLoserStake > 0
+        ? Math.round(undistributed * (bets[i].stake / totalLoserStake) * 10) /
+          10
+        : 0;
   }
 
+  // Final settlement
   for (let i = 0; i < bets.length; i++) {
-    bets[i].status = bets[i].selection === result ? "WON" : "LOST";
+    bets[i].status = isWinner(bets[i]) ? "WON" : "LOST";
+
     bets[i].result = result;
+
     bets[i].netPoints =
       Math.round((tranchePayout[i] - bets[i].stake) * 10) / 10;
   }
 
+  // Update user balances
   const userNetMap = {};
+
   for (const bet of bets) {
     userNetMap[bet.user] =
       Math.round(((userNetMap[bet.user] || 0) + bet.netPoints) * 10) / 10;
   }
+
   for (const [uid, netPts] of Object.entries(userNetMap)) {
     try {
       const user = await getUserById(uid.toLowerCase());
-      if (user) {
-        user.totalNetPoints =
-          Math.round((user.totalNetPoints + netPts) * 10) / 10;
-        await saveUser(user);
-      }
+
+      if (!user) continue;
+
+      user.totalNetPoints =
+        Math.round((user.totalNetPoints + netPts) * 10) / 10;
+
+      await saveUser(user);
     } catch (e) {
-      /* ignore per-user errors */
+      console.error("[ManualSettle User Update]", uid, e);
     }
   }
 
-  const logEntries = [];
-  for (let i = 0; i < bets.length; i++) {
-    logEntries.push({
-      user: bets[i].user,
-      selection: bets[i].selection,
-      stake: bets[i].stake,
-      lockedOdds: bets[i].lockedOdds,
-      effectiveOdds: bets[i].effectiveOdds || bets[i].lockedOdds,
+  // Settlement log
+  const logEntries = bets.map((bet, i) => ({
+    user: bet.user,
+    selection: bet.selection,
+    stake: bet.stake,
+    lockedOdds: bet.lockedOdds,
+    effectiveOdds: bet.effectiveOdds,
+    predictedHomeGoals: bet.predictedHomeGoals,
+    predictedAwayGoals: bet.predictedAwayGoals,
+    actualHomeGoals,
+    actualAwayGoals,
+    scoreBoostApplied: bet.scoreBoostApplied,
+    status: bet.status,
+    finalPayout: tranchePayout[i],
+    netPoints: bet.netPoints,
+  }));
 
-      predictedHomeGoals: bets[i].predictedHomeGoals,
-      predictedAwayGoals: bets[i].predictedAwayGoals,
-
-      actualHomeGoals,
-      actualAwayGoals,
-
-      scoreBoostApplied: bets[i].scoreBoostApplied || false,
-
-      status: bets[i].status,
-      finalPayout: tranchePayout[i],
-      netPoints: bets[i].netPoints,
-    });
-  }
-
-  // Write updated bets back to DB (allBets mutated in-place above)
   await updateBets(allBets);
 
-  // Persist settlement log
   const fb = bets[0];
+
   await db.set(`settlementLog:${fixtureId}`, {
     fixtureId,
     homeTeam: fb.homeTeam || "?",
     awayTeam: fb.awayTeam || "?",
-
     actualHomeGoals,
     actualAwayGoals,
-
     leagueName: fb.leagueName || "Unknown",
     result,
     totalStaked,
-
     settledAt: moment().tz(TIMEZONE).format("DD MMM YYYY, HH:mm z"),
-
     entries: logEntries,
   });
 
   console.log(
-    `[ManualSettle] ${fb.homeTeam} vs ${fb.awayTeam} → ${result} | ${bets.length} bets settled`,
+    `[ManualSettle] ${fb.homeTeam} vs ${fb.awayTeam} -> ${result} (${actualHomeGoals}-${actualAwayGoals}) | ${bets.length} bets settled`,
   );
+
   res.redirect("/admin?manualMsg=ok");
 });
 
