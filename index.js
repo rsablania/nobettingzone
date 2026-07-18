@@ -144,9 +144,9 @@ async function fetchResultsFromOddsApi() {
 }
 
 const TIMEZONE = "Asia/Kolkata";
-const MAX_STAKE_PER_FIXTURE = 500;
+const MAX_STAKE_PER_FIXTURE = 1000;
 const MIN_TRANCHE = 50;
-const STAKE_OPTIONS = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500];
+const STAKE_OPTIONS = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000];
 
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json({ limit: "20mb" }));
