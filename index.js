@@ -414,7 +414,26 @@ async function fetchAndStoreFixtures() {
   const fetchedAt = moment().tz(TIMEZONE).format("DD MMM YYYY, HH:mm z");
   const stored = { events: validated, fetchedAt, creditsLeft };
   await db.set("snapshot:fixtures", stored);
-  fixtureSnapshot = validated;
+
+  const pendingIds = new Set(
+    (await getBets())
+      .filter((b) => b.status === "PENDING")
+      .map((b) => b.fixtureId),
+  );
+
+  const merged = [...validated];
+
+  for (const old of fixtureSnapshot) {
+    if (!validated.some((f) => f.id === old.id) && pendingIds.has(old.id)) {
+      console.log(
+        `[FixtureSync] Preserving pending fixture ${old.home_team} vs ${old.away_team}`,
+      );
+      merged.push(old);
+    }
+  }
+
+  fixtureSnapshot = merged;
+
   snapshotMeta = { fetchedAt, creditsLeft };
   console.log(
     `[DailyJob] Snapshot stored: ${validated.length} total events. Credits remaining: ${creditsLeft}`,
@@ -1634,6 +1653,14 @@ app.get("/", requireAuth, async (req, res) => {
     const now = new Date();
     const cutoff = 10 * 60 * 1000; // 10 min in ms
     // Show events that haven't kicked off yet (betting still open or about to close)
+    console.log("fixtureSnapshot length:", fixtureSnapshot.length);
+
+    fixtureSnapshot.forEach((f) =>
+      console.log(f.id, f.home_team, "vs", f.away_team, f.commence_time),
+    );
+
+    console.log("Now:", now.toISOString());
+
     const events = fixtureSnapshot.filter(
       (ev) => new Date(ev.commence_time) > now,
     );
@@ -1643,6 +1670,11 @@ app.get("/", requireAuth, async (req, res) => {
       const title = ev.sport_title || "Unknown League";
       if (!byLeague[title]) byLeague[title] = [];
       byLeague[title].push(ev);
+      console.log(
+        ev.home_team,
+        ev.commence_time,
+        new Date(ev.commence_time) > now,
+      );
     }
 
     const nextOddsUpdate = (() => {
@@ -4498,6 +4530,16 @@ app.post("/admin/send-settlement-logs", async (req, res) => {
     res.redirect(
       "/admin?logMsg=Email+failed:+" + encodeURIComponent(e.message),
     );
+  }
+});
+
+app.get("/admin/force-sync", async (req, res) => {
+  try {
+    await fetchAndStoreFixtures();
+    res.send("Fixture sync completed.");
+  } catch (e) {
+    console.error(e);
+    res.status(500).send(e.message);
   }
 });
 
